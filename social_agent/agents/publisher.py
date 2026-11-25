@@ -6,16 +6,15 @@ Steps (from the plan):
   3. On fail: retries 3 times.
   4. Still fails: alerts the owner. The post goes back to the calendar for a new time.
   5. Replies to comments and messages in the brand voice. Hard or sensitive ones go to the owner.
+     The agent (for example Grok Bot) writes the replies: new comments wait in "pending_comments"
+     (pending_comments() -> send_replies()). MOCK (demo and tests) replies with a fixed thank-you.
 
-TODO (plan): run this from a job queue (Temporal or BullMQ style) so it posts
-on time without the chat being open. Today, the Manager or `python main.py --publish`
-runs it.
+`python main.py --once` (a routine) or `--publish` runs it.
 """
-import json
 import time
 from datetime import timedelta
 
-from .. import config, llm
+from .. import config
 from ..business_space import BusinessSpace, now_utc, parse_time
 from ..tools import platforms
 from . import planner
@@ -80,6 +79,7 @@ def reply_to_comments(space: BusinessSpace, app) -> list[dict]:
     out = []
     for post in space.posts_with_status("posted"):
         seen = set(post.get("replied_comment_ids", []))
+        pending = list(post.get("pending_comments", []))
         for platform in post["platforms"]:
             for c in platforms.fetch_new_comments(platform, post, space):
                 if c["id"] in seen:
@@ -91,17 +91,43 @@ def reply_to_comments(space: BusinessSpace, app) -> list[dict]:
                     space.add_alert(msg)
                     out.append({"comment": c["id"], "result": "sent to owner"})
                     continue
-                text = _write_reply(brief, c["text"])
+                if not config.MOCK:  # The agent writes the reply (show_comments -> reply_comments).
+                    pending.append({"platform": platform, "id": c["id"], "from": c["from"], "text": c["text"]})
+                    out.append({"comment": c["id"], "result": "waits for a reply"})
+                    continue
+                text = f"Thank you so much! 💛 - {brief.get('business_name', 'the team')}"
                 platforms.reply(platform, c["id"], text, space)
                 out.append({"comment": c["id"], "result": "replied", "reply": text})
-        space.update_post(post["id"], replied_comment_ids=sorted(seen))
+        space.update_post(post["id"], replied_comment_ids=sorted(seen), pending_comments=pending)
     return out
 
 
-def _write_reply(brief: dict, comment: str) -> str:
-    if config.MOCK:
-        return f"Thank you so much! 💛 - {brief.get('business_name', 'the team')}"
-    system = ("You reply to social media comments for a small business. One or two short, friendly "
-              "sentences in the brand voice. No prices, promises or facts you do not know.")
-    prompt = f"Brand brief: {json.dumps(brief)}\n\nComment: {comment}\n\nWrite only the reply."
-    return llm.text_of(llm.call_claude(system, [{"role": "user", "content": prompt}]))
+REPLY_RULES = ("Reply to each comment for the business. One or two short, friendly sentences in the brand voice "
+               "from the brand brief. No prices, promises or facts you do not know.")
+
+
+def pending_comments(space: BusinessSpace) -> dict:
+    """Comments that wait for a reply, with the rules: the agent writes the replies."""
+    items = [{"post_id": p["id"], "topic": p["topic"], "comment_id": c["id"], "from": c["from"], "text": c["text"]}
+             for p in space.posts_with_status("posted") for c in p.get("pending_comments", [])]
+    return {"status": "needs_text" if items else "nothing_to_do", "step": "reply_comments",
+            "do": "Write a reply for each comment. Then run reply_comments with "
+                  '{"replies": [{"post_id": ..., "comment_id": ..., "text": ...}]}.',
+            "rules": REPLY_RULES, "data": {"brand_brief": space.get_brand_brief() or {}, "comments": items}}
+
+
+def send_replies(space: BusinessSpace, replies: list[dict]) -> list[dict]:
+    """Post the agent's replies. Each reply: post_id, comment_id, text."""
+    out = []
+    for r in replies:
+        post = space.get_post(r["post_id"]) or {}
+        pending = list(post.get("pending_comments", []))
+        c = next((c for c in pending if c["id"] == r["comment_id"]), None)
+        if c is None:
+            out.append({"comment": r["comment_id"], "result": "not waiting for a reply"})
+            continue
+        platforms.reply(c["platform"], c["id"], r["text"], space)
+        pending.remove(c)
+        space.update_post(post["id"], pending_comments=pending)
+        out.append({"comment": c["id"], "result": "replied"})
+    return out

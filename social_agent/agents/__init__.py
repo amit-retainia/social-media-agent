@@ -1,6 +1,6 @@
 """The team of agents for one business (names match the design plan).
 
-Manager agent  -> manager.py        runs the team, talks with the owner
+Manager agent  -> manager.py        the steps the AI agent (Grok Bot) runs; the agent talks with the owner
 1. Interviewer -> interviewer.py    learns business needs
 2. Planner     -> planner.py        picks topics and schedule, writes scripts
 3. Creator     -> creator.py        makes text, images, videos

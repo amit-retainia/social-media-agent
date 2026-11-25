@@ -24,15 +24,11 @@ def _flag(name: str, default: bool) -> bool:
     return default if value == "" else value.lower() in {"1", "true", "yes", "on"}
 
 
-# ---- Claude (text for all agents, and trends with web search) ----
-API_KEY = _env("ANTHROPIC_API_KEY")
-MODEL = _env("CLAUDE_MODEL", "claude-sonnet-5-5")
-MAX_TOKENS = int(_env("CLAUDE_MAX_TOKENS", "4096"))
-TRENDS_WEB_SEARCH = _flag("TRENDS_WEB_SEARCH", True)
-
-# Mock mode: no Claude calls. Agents use simple fixed logic.
-# It is on when there is no API key, or when you run with --mock.
-MOCK = (not API_KEY) or _env("MOCK") == "1"
+# ---- Text (scripts, captions, image prompts, learnings, comment replies) ----
+# The AI agent that runs the steps (Grok Bot, or any other) writes all text; this app has no LLM inside.
+# A step that needs text answers "needs_text" with the rules and data; the agent calls it again with the text.
+# MOCK (demo and tests, --mock or MOCK=1): fixed sample text instead.
+MOCK = _env("MOCK") == "1"
 
 # ---- MachGen: images and video clips from open models (the Creator's default) ----
 MACHGEN_API_KEY = _env("MACHGEN_API_KEY")
@@ -167,8 +163,8 @@ def services() -> list[tuple[str, bool, str]]:
     """(service, is_real, what to set) for every outside service."""
     r2 = all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET])
     return [
-        ("Claude (all agents' text)", not MOCK, "ANTHROPIC_API_KEY"),
-        ("Trends and web search (Planner)", not MOCK and TRENDS_WEB_SEARCH, "ANTHROPIC_API_KEY"),
+        ("Text (scripts, captions, learnings, replies): written by the agent" + (" - MOCK sample text" if MOCK else ""),
+         True, "no key needed"),
         ("AI images (Creator)" + (f": {_image_provider()}" if _image_provider() else ""),
          bool(_image_provider()), "MACHGEN_API_KEY (or OPENAI_API_KEY)"),
         ("AI video clips (Creator)" + (f": {_video_provider()}" if _video_provider() else ""),

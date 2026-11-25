@@ -17,6 +17,9 @@ Outside services (each switches on when its key is in .env; see tools/ai_models.
   voiceover: Fish Audio, word times: Whisper on Groq
   edit, captions and sizes per platform: ffmpeg + Pillow (no key).
 The owner can also give own photos or clips: media_library/<post id>/owner/ (used before AI).
+The agent that runs this step (for example Grok Bot) writes the text (step 2). Called without it, run() answers
+"needs_text" with the rules, the scripts and the shape; the agent writes each draft and calls it again with
+`drafts` ({post id: draft}). MOCK (demo and tests) uses fixed sample text.
 Media library per post: script.json, draft_vN.json, raw images, clips, voiceover, captions .srt,
 and the final files named v<N>_<size>_... (for example v1_9x16_final.mp4, v1_1x1_image1.jpg).
 """
@@ -24,7 +27,7 @@ import json
 import math
 from pathlib import Path
 
-from .. import config, llm
+from .. import config
 from ..business_space import BusinessSpace
 from ..tools import ai_models, media_edit
 from ..tools.http import ServiceError
@@ -64,45 +67,77 @@ DRAFT_SCHEMA = {
 }
 
 
-def run(space: BusinessSpace, post_ids: list[str] | None = None) -> dict:
-    """Make drafts for planned posts and posts with change requests."""
+def run(space: BusinessSpace, post_ids: list[str] | None = None, drafts: dict | None = None) -> dict:
+    """Make drafts for planned posts and posts with change requests. `drafts`: {post id: text}, by the agent."""
     posts = space.posts_with_status("planned", "changes_requested")
     if post_ids:
         posts = [p for p in posts if p["id"] in post_ids]
     if not posts:
         return {"status": "nothing_to_do", "message": "No planned posts or change requests."}
-    made = [make_draft(space, post) for post in posts]
+    drafts = drafts or {}
+    missing = [p for p in posts if p["id"] not in drafts and not config.MOCK]
+    made = [make_draft(space, post, drafts.get(post["id"])) for post in posts if post not in missing]
+    if missing:
+        result = needs_text(space, missing)
+        result["made"] = made
+        if not made:
+            return result
+        planner.write_plan_file(space)
+        owner_approval_send(space, made)
+        return result
     planner.write_plan_file(space)  # Keep content_plan.json up to date.
-    # Step 7: send the drafts for owner approval. Plan: "Push or email alert for each new draft".
-    from . import owner_approval  # (imported here: owner_approval also imports the Creator)
-    try:
-        on_phone = bool(owner_approval.send_previews(space))  # Owner app on the phone (Telegram), if set.
-    except Exception as exc:  # noqa: BLE001 - the drafts are saved; the owner review sends them again
-        on_phone = False
-        space.add_alert(f"Could not send previews to your phone: {exc}", phone=False)
-    space.add_alert(f"{len(made)} new draft(s) wait for your approval: " + ", ".join(m["id"] for m in made),
-                    phone=not on_phone)
+    owner_approval_send(space, made)
     return {"status": "drafts_ready", "drafts": made, "next_step": "Owner approval."}
 
 
-def make_draft(space: BusinessSpace, post: dict) -> dict:
+def owner_approval_send(space: BusinessSpace, made: list[dict]) -> None:
+    """Step 7: send the drafts for owner approval. Plan: "Push or email alert for each new draft"."""
+    from . import owner_approval  # (imported here: owner_approval also imports the Creator)
+    try:
+        on_phone = bool(owner_approval.send_previews(space))  # Discord, or Telegram, if set.
+    except Exception as exc:  # noqa: BLE001 - the drafts are saved; the next round sends them again
+        on_phone = False
+        space.add_alert(f"Could not send the draft previews: {exc}", phone=False)
+    space.add_alert(f"{len(made)} new draft(s) wait for your approval: " + ", ".join(m["id"] for m in made),
+                    phone=not on_phone)
+
+
+def needs_text(space: BusinessSpace, posts: list[dict]) -> dict:
+    """Everything the agent needs to write the drafts (step 2)."""
+    return {
+        "status": "needs_text",
+        "step": "create_drafts",
+        "do": "Write one draft per post by these rules and this shape. Then run create_drafts with "
+              "{\"drafts\": {\"<post id>\": <draft>, ...}}.",
+        "rules": SYSTEM,
+        "shape": DRAFT_SCHEMA,
+        "data": {
+            "brand_brief": space.get_brand_brief() or {},
+            "posts": [{"id": p["id"], "topic": p["topic"], "format": p["format"], "platforms": p["platforms"],
+                       "script": p["script"], "owner_change_notes": p.get("change_notes", []),
+                       "previous_draft": {k: v for k, v in (p.get("draft") or {}).items()
+                                          if k in ("final_copy", "caption", "hashtags", "image_prompts", "scenes")}}
+                      for p in posts],
+        },
+    }
+
+
+def make_draft(space: BusinessSpace, post: dict, text: dict | None = None) -> dict:
+    """`text`: the draft text written by the agent (final_copy, caption, hashtags, image_prompts or scenes)."""
     brief = space.get_brand_brief() or {}
     folder = space.media_folder(post["id"])
     version = len(post.get("change_notes", [])) + 1
 
-    # Steps 1-2: get the script; write final copy (+ image prompts or scenes).
-    if config.MOCK:
+    # Steps 1-2: get the script; the final copy (+ image prompts or scenes) comes from the agent.
+    if text is not None:
+        draft = {k: v for k, v in text.items() if k in DRAFT_SCHEMA["properties"]}
+        draft.setdefault("final_copy", post["script"].get("caption", post["topic"]))
+        draft.setdefault("caption", post["script"].get("caption", ""))
+        draft.setdefault("hashtags", post["script"].get("hashtags", []))
+    elif config.MOCK:
         draft = _mock_draft(post, brief)
     else:
-        prompt = (
-            f"Brand brief:\n{json.dumps(brief, indent=2)}\n\n"
-            f"Post: topic={post['topic']}, format={post['format']}, platforms={post['platforms']}\n"
-            f"Script from the Planner:\n{json.dumps(post['script'], indent=2)}\n"
-        )
-        if post.get("change_notes"):
-            prompt += f"\nOwner change notes (newest last): {post['change_notes']}\n"
-            prompt += f"Previous draft:\n{json.dumps(post.get('draft', {}), indent=2)}\n"
-        draft = llm.structured(SYSTEM, prompt, "draft", DRAFT_SCHEMA)
+        raise ValueError(f"No draft text for {post['id']}. Run create_drafts and write the text it asks for.")
 
     # Steps 3-5: media files, captions, sized per platform.
     warnings: list[str] = []

@@ -7,7 +7,7 @@ import subprocess
 from types import SimpleNamespace
 from unittest import mock
 
-from social_agent import config, llm
+from social_agent import config
 from tests.test_flow import Base
 
 
@@ -287,17 +287,6 @@ class OtherServicesTest(Base):
         with patch, mock.patch.object(config, "ALERT_WEBHOOK_URL", "https://hooks.example/abc"):
             BusinessSpace("alerts").add_alert("Post failed")
         self.assertIn("Post failed", fake.calls[0].json["text"])
-
-    def test_trends_web_search(self):
-        from datetime import date
-        from social_agent.tools import trends
-        reply = SimpleNamespace(content=[SimpleNamespace(type="text", text='Here: ["Christmas cakes", "Diwali sweets"]')])
-        calls = []
-        with mock.patch.object(config, "MOCK", False), \
-                mock.patch.object(llm, "call_claude", lambda *a, **k: calls.append(k) or reply):
-            out = trends.get_trends("bakery", date(2026, 11, 25), "Pune")
-        self.assertEqual(out, ["Christmas cakes", "Diwali sweets"])
-        self.assertEqual(calls[0]["tools"][0]["type"], "web_search_20250305")
 
     def test_services_list(self):
         with mock.patch.object(config, "OPENAI_API_KEY", "x"), mock.patch.object(config, "INSTAGRAM_USER_ID", ""), \

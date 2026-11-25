@@ -1,7 +1,6 @@
 """Data sources and tools (dashed boxes on the diagram).
 
 website.py    -> "Interview answers and website"  (Interviewer)
-trends.py     -> "Trends and web search"          (Planner)
-ai_models.py  -> "AI models: text, image, video, voice" (Creator)
+ai_models.py  -> "AI models: image, video, voice" (Creator; the agent writes the text)
 platforms.py  -> "Social platforms"               (Interviewer, Publisher, Analyst)
 """

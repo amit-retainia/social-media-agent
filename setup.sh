@@ -13,7 +13,7 @@ python3 -m venv .venv
 
 # 2. Keys: from the environment (Bot secrets) or .env. Only names are printed, never values.
 missing=()
-for k in ANTHROPIC_API_KEY MACHGEN_API_KEY FISH_API_KEY GROQ_API_KEY DISCORD_WEBHOOK_URL \
+for k in MACHGEN_API_KEY FISH_API_KEY GROQ_API_KEY DISCORD_WEBHOOK_URL \
          INSTAGRAM_ACCESS_TOKEN INSTAGRAM_USER_ID FACEBOOK_PAGE_ID FACEBOOK_PAGE_TOKEN \
          R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
   if [ -z "${!k:-}" ] && ! grep -qE "^$k=.+" .env 2>/dev/null; then missing+=("$k"); fi

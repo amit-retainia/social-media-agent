@@ -46,6 +46,10 @@ def tick(app=None) -> None:
             out = publisher.run(space, app)
             for r in out["published"]:
                 app.say("Publisher", f"{space.tenant_id}: {r}")
+            waiting = sum(len(p.get("pending_comments", [])) for p in space.posts_with_status("posted"))
+            if waiting:
+                app.say("Publisher", f"{space.tenant_id}: {waiting} comment(s) wait for a reply "
+                                     f"(run show_comments, write the replies, run reply_comments).")
         except Exception as exc:  # noqa: BLE001 - keep going with the other businesses
             app.say("Bot", f"{space.tenant_id}: error: {exc}")
 

@@ -16,15 +16,18 @@ Two kinds of task from the Manager:
   plan_week(...)  a weekly content calendar (posts_per_week from the brand brief).
   run(...)        news from the owner ("I baked a new chocolate cake") -> a post on the next suitable day.
 Both save the plan to content_plan.json in the Business space, ready for the Creator.
+
+The agent that runs this step (for example Grok Bot) writes the posts. Called without `posts`, a step answers
+"needs_text": the rules, the free time slots and the data. The agent writes the posts and calls it again.
+This file only checks them and puts them on the calendar. MOCK (demo and tests) uses fixed sample posts.
 """
 import json
 import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import config, llm
+from .. import config
 from ..business_space import BusinessSpace, now_utc, parse_time
-from ..tools.trends import get_trends
 
 FORMATS = ["post", "carousel", "reel", "video"]
 VIDEO_FORMATS = ("reel", "video")
@@ -51,7 +54,7 @@ Pick topics, formats, dates and times, and write one script per post.
 Rules:
 - Follow the brand brief, its voice and its banned topics. Never invent prices or facts.
 - Use the learnings from the Analyst: do more of what works (format, time, platform, topic).
-- Use the trends when they fit the brand.
+- Search the web for current trends and dates (next 2 weeks) and use them when they fit the brand.
 - Formats: post (one image), carousel (3-6 slides), reel (short vertical video), video (longer video).
 - Pick scheduled_at from the free slots given (or a nearby time on the same day). One post per day.
 - reel / video: fill hook, script, caption, hashtags.
@@ -102,8 +105,9 @@ PLAN_SCHEMA = {
 
 
 # =============== public entry points (the Manager calls these) ===============
-def run(space: BusinessSpace, task: str, number_of_posts: int = 1, preferred_day: str = "") -> dict:
-    """News or a one-off request: add post(s) on the next suitable day(s)."""
+def run(space: BusinessSpace, task: str, number_of_posts: int = 1, preferred_day: str = "",
+        posts: list[dict] | None = None) -> dict:
+    """News or a one-off request: add post(s) on the next suitable day(s). `posts`: written by the agent."""
     ctx = _context(space)
     if "error" in ctx:
         return ctx["error"]
@@ -111,16 +115,18 @@ def run(space: BusinessSpace, task: str, number_of_posts: int = 1, preferred_day
     start = _preferred_start(ctx["tz"], preferred_day)
     fmt = _news_format(ctx, task)
     slots = free_slots(space, ctx["connected"], n, start=start, fmt=fmt, preferred_time=ctx["best_time"])
-    if config.MOCK:
+    if posts is not None:
+        posts = _fit_times(posts[:n], slots, ctx["tz"])
+    elif config.MOCK:
         posts = [_mock_news_post(ctx, task, i, slots[i], fmt if i == 0 else "post") for i in range(n)]
     else:
-        posts = _claude_plan(ctx, f"News from the owner: {task}\nMake {n} post(s) on the next suitable day(s).",
-                             n, slots)
+        return _needs_posts(ctx, f"News from the owner: {task}\nMake {n} post(s) on the next suitable day(s). "
+                                 f"Suggested format: {fmt}.", n, slots, "plan_posts")
     return _finish(space, ctx, posts, task, kind="news")
 
 
-def plan_week(space: BusinessSpace, task: str = "", week: str = "next") -> dict:
-    """A weekly content calendar: posts_per_week posts, spread over the week."""
+def plan_week(space: BusinessSpace, task: str = "", week: str = "next", posts: list[dict] | None = None) -> dict:
+    """A weekly content calendar: posts_per_week posts, spread over the week. `posts`: written by the agent."""
     ctx = _context(space)
     if "error" in ctx:
         return ctx["error"]
@@ -153,13 +159,15 @@ def plan_week(space: BusinessSpace, task: str = "", week: str = "next") -> dict:
     if not slots:
         return {"status": "no_free_days", "message": f"No free days left in the week of {monday:%d %b}."}
 
-    if config.MOCK:
+    if posts is not None:
+        posts = _fit_times(posts[:len(slots)], [s for s, _, _ in slots], tz)
+    elif config.MOCK:
         posts = [_mock_week_post(ctx, task, idea, fmt, slot, i) for i, (slot, fmt, idea) in enumerate(slots)]
     else:
         request = (f"Plan the week of {monday:%A %d %B %Y}. {len(slots)} posts. Mix the formats. "
                    f"Suggested pattern: {[(DAY_NAMES[s.astimezone(tz).weekday()], f, i) for s, f, i in slots]}. "
                    f"Extra wishes from the owner: {task or 'none'}")
-        posts = _claude_plan(ctx, request, len(slots), [s for s, _, _ in slots])
+        return _needs_posts(ctx, request, len(slots), [s for s, _, _ in slots], "plan_week")
     result = _finish(space, ctx, posts, task or "weekly plan", kind="week")
     result["week_of"] = monday.isoformat()
     return result
@@ -247,7 +255,7 @@ def _preferred_start(tz: ZoneInfo, preferred_day: str) -> datetime:
 
 # =============== shared steps ===============
 def _context(space: BusinessSpace) -> dict:
-    """Step 1: read the brand brief, trends and learnings."""
+    """Step 1: read the brand brief and learnings (the agent searches the web for trends)."""
     brief = space.get_brand_brief()
     if not brief:
         return {"error": {"status": "blocked", "message": "No brand brief yet. Run the Interviewer first."}}
@@ -260,7 +268,6 @@ def _context(space: BusinessSpace) -> dict:
     best_format, best_time = _learned_preferences(learnings)
     return {
         "brief": brief, "connected": connected, "tz": tz,
-        "trends": get_trends(brief.get("business_type", ""), datetime.now(tz).date(), brief.get("location", "")),
         "learnings": learnings, "best_format": best_format, "best_time": best_time,
         "calendar": [{k: p[k] for k in ("topic", "format", "platforms", "scheduled_at", "status")}
                      for p in space.get_calendar() if p["status"] != "posted"],
@@ -291,21 +298,27 @@ def _week_template(n: int, best_format: str | None) -> list[tuple[int, str, str]
     return template
 
 
-def _claude_plan(ctx: dict, request: str, n: int, slots: list[datetime]) -> list[dict]:
-    """Steps 2, 3, 5 with Claude."""
+def _needs_posts(ctx: dict, request: str, n: int, slots: list[datetime], step: str) -> dict:
+    """Steps 2, 3, 5 are written by the agent: everything it needs to write the posts."""
     tz = ctx["tz"]
-    slot_text = [f"{DAY_NAMES[s.astimezone(tz).weekday()]} {s.astimezone(tz).isoformat()}" for s in slots]
-    prompt = (
-        f"Now: {datetime.now(tz).isoformat()} (time zone {tz.key})\n"
-        f"Task from the Manager: {request}\nNumber of posts: {n}\n"
-        f"Free slots (pick from these): {slot_text}\n\n"
-        f"Brand brief:\n{json.dumps(ctx['brief'], indent=2, ensure_ascii=False)}\n\n"
-        f"Connected platforms: {ctx['connected']}\nTrends: {ctx['trends']}\n"
-        f"Learnings from the Analyst: {ctx['learnings'] or 'none yet'}\n"
-        f"Already on the calendar: {json.dumps(ctx['calendar'], ensure_ascii=False)}"
-    )
-    posts = llm.structured(SYSTEM, prompt, "content_plan", PLAN_SCHEMA)["posts"][:n]
-    # Fix any time that is invalid, in the past or on a busy day: use the free slot instead.
+    return {
+        "status": "needs_text",
+        "step": step,
+        "do": f"Write {n} post(s) by these rules and this shape. Then run {step} again with the same input "
+              "plus \"posts\": [your posts].",
+        "rules": SYSTEM,
+        "shape": PLAN_SCHEMA["properties"]["posts"],
+        "data": {
+            "now": datetime.now(tz).isoformat(), "time_zone": tz.key, "task": request, "number_of_posts": n,
+            "free_slots": [f"{DAY_NAMES[s.astimezone(tz).weekday()]} {s.astimezone(tz).isoformat()}" for s in slots],
+            "brand_brief": ctx["brief"], "connected_platforms": ctx["connected"],
+            "learnings": ctx["learnings"] or "none yet", "already_on_calendar": ctx["calendar"],
+        },
+    }
+
+
+def _fit_times(posts: list[dict], slots: list[datetime], tz: ZoneInfo) -> list[dict]:
+    """Fix any time that is invalid, in the past or on a busy day: use the free slot instead."""
     for post, slot in zip(posts, slots):
         try:
             t = parse_time(post["scheduled_at"])
@@ -378,7 +391,7 @@ def write_plan_file(space: BusinessSpace, ctx: dict | None = None) -> object:
     """
     if ctx is None:  # Keep the inputs of the last Planner run.
         ctx = (space.get_content_plan() or {}).get("inputs", {})
-        ctx = {"trends": ctx.get("trends", []), "learnings": ctx.get("learnings_used", [])}
+        ctx = {"learnings": ctx.get("learnings_used", [])}
     brief = space.get_brand_brief() or {}
     tz = local_tz(brief)
     upcoming = [p for p in space.get_calendar() if p["status"] != "posted"]
@@ -393,7 +406,7 @@ def write_plan_file(space: BusinessSpace, ctx: dict | None = None) -> object:
         "business": brief.get("business_name") or space.tenant_id,
         "timezone": tz.key,
         "updated_at": now_utc().isoformat(),
-        "inputs": {"trends": (ctx or {}).get("trends", []), "learnings_used": (ctx or {}).get("learnings", [])},
+        "inputs": {"learnings_used": (ctx or {}).get("learnings", [])},
         "calendar_view": [f"{_label(parse_time(p['scheduled_at']), tz)} | {p['format']} | "
                           f"{', '.join(p['platforms'])} | {p['topic']} [{p['status']}]" for p in upcoming],
         "weeks": [{"week_of": w, "days": [{"date": d, "day": DAY_NAMES[date.fromisoformat(d).weekday()],
@@ -409,7 +422,7 @@ def _label(t: datetime, tz: ZoneInfo) -> str:
     return t.astimezone(tz).strftime("%a %d %b %H:%M")
 
 
-# =============== mock mode (no Claude): simple fixed scripts ===============
+# =============== mock mode (demo and tests): simple fixed scripts ===============
 def _product(task: str, brief: dict) -> str:
     m = re.search(r"\bnew ([a-z][\w\s'-]{2,40}?)(?=,|\.|!| and | i | we | to |$)", task, re.I)
     if m:
@@ -504,6 +517,5 @@ def _mock_week_post(ctx: dict, task: str, idea: str, fmt: str, slot: datetime, i
         if fmt == "carousel":
             script["slides"] = [f"{o.capitalize()}" for o in offers[:4]] + ["Visit us this week"]
     return {"topic": topic, "format": fmt, "platforms": ctx["connected"], "scheduled_at": slot.isoformat(),
-            "why": f"Weekly mix: {fmt} on {DAY_NAMES[slot.astimezone(ctx['tz']).weekday()]}"
-                   + (f"; trend: {ctx['trends'][1]}" if fmt in VIDEO_FORMATS and len(ctx['trends']) > 1 else ""),
+            "why": f"Weekly mix: {fmt} on {DAY_NAMES[slot.astimezone(ctx['tz']).weekday()]}",
             "script": script}

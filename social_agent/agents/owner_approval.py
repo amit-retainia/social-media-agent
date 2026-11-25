@@ -44,12 +44,17 @@ def approve(space: BusinessSpace, post_id: str, via: str) -> dict:
     return post
 
 
-def request_changes(space: BusinessSpace, post_id: str, note: str, via: str) -> dict:
-    """Steps 3-4: back to the Creator with a short note. The Creator fixes it and sends it again."""
+def request_changes(space: BusinessSpace, post_id: str, note: str, via: str, draft: dict | None = None) -> dict:
+    """Steps 3-4: back to the Creator with a short note. The Creator fixes it and sends it again.
+    The new text comes from the agent (`draft`). Without it, the post waits in "changes_requested" and the
+    answer is "needs_text" (MOCK remakes it with sample text)."""
     post = space.get_post(post_id)
     notes = post.get("change_notes", []) + [note.strip()]
     space.update_post(post_id, status="changes_requested", change_notes=notes, change_requested_via=via)
-    result = creator.make_draft(space, space.get_post(post_id))  # -> status "pending_approval" again
+    if draft is None and not config.MOCK:
+        planner.write_plan_file(space)
+        return creator.needs_text(space, [space.get_post(post_id)])
+    result = creator.make_draft(space, space.get_post(post_id), draft)  # -> status "pending_approval" again
     planner.write_plan_file(space)
     return result
 
@@ -358,7 +363,8 @@ def handle_update(update: dict) -> None:
     telegram.remove_buttons(chat, entry["message_id"])
     telegram.send_text(chat, "✏️ Got it. The Creator is fixing it. A new preview comes soon.")
     request_changes(space, post["id"], text, via="telegram")
-    send_preview(space, space.get_post(post["id"]))
+    if space.get_post(post["id"])["status"] == "pending_approval":  # Else the agent writes it (next create_drafts).
+        send_preview(space, space.get_post(post["id"]))
 
 
 def _current(entry: dict):

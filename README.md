@@ -1,7 +1,10 @@
 # Social Media Agents - Python project
 
-A team of AI agents runs social media for one small business.
-You talk only to the **Manager**. The Manager runs the other agents.
+A team of AI agents runs social media for one business.
+The owner talks only to the **Manager**: an AI agent such as Grok Bot (skill `skills/social-manager`).
+The Manager writes all text (plans, scripts, captions, replies, learnings) and runs the team's steps with
+`python main.py --tool <step>`. This app has **no AI text model inside**: a step that needs text answers
+`needs_text` with the rules and the data, and the agent runs it again with the text.
 
 ```
 1 Interviewer -> 2 Planner -> 3 Creator -> 4 Owner approval -> 5 Publisher -> 6 Analyst
@@ -22,7 +25,6 @@ When a key is missing, that service is simulated, so the app still runs end to e
 
 | Service | What it does | Key in `.env` | Where to get it |
 |---|---|---|---|
-| Claude (Anthropic) | Text for all agents. Planner trends with web search. | `ANTHROPIC_API_KEY` | https://console.anthropic.com |
 | **MachGen** | Creator makes images (Nano-Banana-2) **and** video clips (Vidu-Q3-Turbo). One key for both. | `MACHGEN_API_KEY` | https://www.machgen.ai -> Profile -> API Keys |
 | Fish Audio | Creator makes the voiceover (model s2.1-pro-free, no cost) | `FISH_API_KEY` (+ `FISH_VOICE_ID`) | https://fish.audio |
 | Groq (free tier) | Whisper word times for the captions and scene cuts. Without it, times are estimated | `GROQ_API_KEY` | https://console.groq.com/keys |
@@ -63,7 +65,7 @@ Notes:
 |---|---|
 | Manager | Chats with you, routes work to each agent, updates the brand brief |
 | 1. Interviewer | Asks questions, reads your website, checks linked accounts, writes the brand brief (with time zone and closed days) |
-| 2. Planner | Weekly content calendar and news posts. Picks topics, formats (post, carousel, reel, video), days and times. Writes a script per post. Uses trends and the Analyst's learnings. Saves `content_plan.json` |
+| 2. Planner | Weekly content calendar and news posts. Picks topics, formats (post, carousel, reel, video), days and times. Writes a script per post. Uses web trends (the agent searches) and the Analyst's learnings. Saves `content_plan.json` |
 | 3. Creator | Final copy, images (MachGen), video clips (MachGen), voiceover (Fish Audio), edit with captions (ffmpeg), sizes per platform (9:16, 1:1, 16:9), text per platform |
 | 4. Owner approval | Preview on your phone (Telegram) or in the terminal; approve, or ask for changes with a short note; the Creator fixes and sends it again; reminders for slow approvals |
 | 5. Publisher | Posts at the set time, 3 retries, alerts, new time from the Planner, replies to comments |
@@ -71,7 +73,7 @@ Notes:
 
 ## The Planner (step 2)
 
-1. Reads the brand brief, trends (web search) and learnings from the Analyst.
+1. Reads the brand brief and learnings from the Analyst; the agent searches the web for trends.
 2. Picks topics and formats: **post, carousel, reel, video**.
 3. Sets dates and times: one post per platform per day, at good local times, in the business time zone.
    It skips closed days and blackout dates from the brand brief.
@@ -98,7 +100,7 @@ Each script is also saved in `media_library/<post id>/script.json`.
 It follows the plan's steps for every planned post (and every post you asked to change):
 
 1. **Gets the script** from the Planner.
-2. **Text:** writes the final copy in the brand voice (Claude), plus a text for each platform
+2. **Text:** the agent writes the final copy in the brand voice, plus a text for each platform
    inside its limit (X: 280 characters, 2 hashtags; Instagram: 2,200, up to 15 hashtags; and so on).
 3. **Image (post, carousel):** writes an image prompt (1 for a post, 3-5 for a carousel) and makes it with
    the AI image model (MachGen). Your own photos come first: put them in
@@ -173,7 +175,7 @@ and call `owner_approval.approve()` / `request_changes()` from it.
 ## 1. What you need
 
 - Python **3.10 or newer**. Check it: `python3 --version`
-- Your API keys (see the table above). No keys yet? It still runs in mock mode.
+- Your API keys (see the table above). No keys yet? Services are simulated; `--mock` adds sample text.
 
 ## 2. Unzip and open the folder
 
@@ -215,34 +217,27 @@ Then check: `python main.py --check`
 
 ## 6. Run it
 
-```bash
-python main.py --business sweet-crumbs
-```
+An AI agent runs the steps (on Grok Bot: see GROK.md and `skills/social-manager/SKILL.md`). By hand:
 
-Try this:
-1. Answer the Interviewer's questions.
-2. Type: `plan my week` -> see the week. Type `make drafts`, then approve each one.
-3. Type: `I baked a new chocolate cake, I want people to know`
-4. Look at the preview (on your phone with Telegram, or here). Approve, or send a short note on what to change.
-5. Type: `show the plan`
-6. Type: `post it now` (or wait for the planned time).
-7. Type: `how did my posts do?`
-8. Type `quit` to stop.
+```bash
+python main.py --tool steps                                                  # every step and its input
+python main.py --business sweet-crumbs --tool plan_posts --args '{"task": "new chocolate cake"}'
+#   -> "needs_text": rules + data. Write the post, then run it again with "posts": [...]
+python main.py --mock --business sweet-crumbs --tool plan_week               # demo with sample text
+```
 
 More options:
 
 ```bash
-python main.py --mock                 # mock mode (no Claude), even with a key
 python main.py --publish              # Publisher only: post what is due, then stop
 python main.py --check                # which services are real or simulated
 python main.py --bot                  # always on: phone approvals, reminders, Publisher on time
 python main.py --telegram-setup       # check the Telegram bot and find your chat ID
 python main.py --once                 # one --bot round, then exit (Grok Bot routine or cron)
-python main.py --business sweet-crumbs --tool plan_week --args '{"week": "next"}'   # one team step, JSON out
 ```
 
-Run `python main.py --bot` (see Owner approval), or run `python main.py --publish --business sweet-crumbs`
-every 5 minutes (cron or Windows Task Scheduler), so posts go out on time when the chat is closed.
+Run `python main.py --once` every 15 minutes (Grok Bot routine, cron or Windows Task Scheduler),
+so posts go out on time.
 
 ## 7. See the results
 
@@ -271,8 +266,7 @@ plus real ffmpeg edits with captions and exact sizes per platform.
 
 | Name | Default | What it does |
 |---|---|---|
-| `CLAUDE_MODEL` | `claude-sonnet-5-5` | The Claude model |
-| `TRENDS_WEB_SEARCH` | `1` | Planner searches the web for trends |
+| `MOCK` | empty | `1` = fixed sample text instead of text from the agent (demo and tests) |
 | `MACHGEN_IMAGE_MODEL` | `Nano-Banana-2` | MachGen image model |
 | `MACHGEN_VIDEO_MODEL` | `Vidu-Q3-Turbo` | MachGen video model |
 | `MACHGEN_VIDEO_HEIGHT` | `540` | Video height (nearest allowed height is used) |
@@ -296,24 +290,21 @@ plus real ffmpeg edits with captions and exact sizes per platform.
 ## Project files
 
 ```
-main.py                     command-line chat with the Manager (--check, --publish, --mock, --bot, --telegram-setup)
+main.py                     the steps for the agent (--tool, --once, --check, --publish, --mock, --bot, --telegram-setup)
 social_agent/
   config.py                 settings and keys; services() shows real vs simulated
-  llm.py                    all Claude calls (Anthropic Python SDK)
   business_space.py         the shared Business space (JSON files today)
-  owner_app.py              the Owner app in the terminal
   bot.py                    always-on runner: phone answers, reminders, Publisher on time
   agents/
-    manager.py              Manager agent - routes work with tools
-    interviewer.py          1. Interviewer
+    manager.py              the steps the agent (Manager) runs: --tool <step>
+    interviewer.py          1. Interviewer - brief fields, questions, account check
     planner.py              2. Planner - weekly calendar, news posts, scripts, content_plan.json
     creator.py              3. Creator
-    owner_approval.py       4. Owner approval - phone (Telegram) or terminal; approve, changes, reminders
+    owner_approval.py       4. Owner approval - chat (agent), Discord previews, or Telegram; approve, changes, reminders
     publisher.py            5. Publisher
     analyst.py              6. Analyst
   tools/
     website.py              reads the business website
-    trends.py               trends: Claude web search (or a fixed list)
     ai_models.py            provider layer: images, video clips, voice (picks MachGen / OpenAI / Runway / Fish Audio + Groq)
     machgen.py              MachGen REST API: images and video clips
     media_edit.py           sizes per platform, captions, video edit (Pillow + ffmpeg)
@@ -335,8 +326,7 @@ tests/                      test_flow.py, test_planner.py, test_creator.py, test
 ## Problems?
 
 - `ModuleNotFoundError`: turn on the venv (step 3), then do step 4 again.
-- `AuthenticationError`: your Anthropic key in `.env` is wrong.
-- `model not found`: set `CLAUDE_MODEL` in `.env` to a model your account can use.
+- A step answers `needs_text`: that is normal. Write the text it asks for and run it again with the text.
 - An account shows `needs_login`: its Meta token is wrong or expired. Make a new one, then say `connect my accounts again`.
 - Telegram: no preview on the phone -> run `python main.py --telegram-setup`. Check `TELEGRAM_CHAT_ID`.
   `Conflict: terminated by other getUpdates request` -> only run one `--bot` per bot token.

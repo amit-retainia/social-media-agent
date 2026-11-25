@@ -1,6 +1,7 @@
 # Running on Grok Bot
 
-Same setup as CB Reels: Grok is the brain and talks with the owner; the Python code does the work.
+Same setup as CB Reels: Grok is the brain. It talks with the owner and writes all the text (plans, scripts,
+captions, replies, learnings). The Python code has no AI text model inside: it does the rest.
 
 ## How it runs
 ```
@@ -27,7 +28,8 @@ Posting: the media goes to Cloudflare R2; Instagram and Facebook download it fro
 4. Create the bot "Social Manager". Ask it to save a skill:
    "Read `/workspace/social-media-agent/skills/social-manager/SKILL.md` in full and follow it."
 5. In that bot, create a routine every 15 minutes:
-   "Run `cd /workspace/social-media-agent && .venv/bin/python main.py --once`. Reply with its last 5 lines. Do nothing else."
+   "Run `cd /workspace/social-media-agent && .venv/bin/python main.py --once`. If it says comments wait for a reply,
+   follow the 'Routine' part of the social-manager skill. Reply with what was posted and replied, in 3 lines at most."
    Use **Test** once.
 
 After a computer update the Python environment is gone: run `bash setup.sh` again.
@@ -36,7 +38,6 @@ After a computer update the Python environment is gone: run `bash setup.sh` agai
 
 | Key | Used for | Where to get it |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | text of the Planner, Creator, Analyst (Claude) | console.anthropic.com |
 | `MACHGEN_API_KEY` | images (Nano-Banana-2) and video clips (Vidu-Q3-Turbo) | machgen.ai, Profile, API Keys |
 | `FISH_API_KEY` | voiceover (s2.1-pro-free, no cost) | fish.audio, API Keys |
 | `GROQ_API_KEY` | word times for captions and scene cuts (free tier) | console.groq.com/keys |

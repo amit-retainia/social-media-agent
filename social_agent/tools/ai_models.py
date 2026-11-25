@@ -1,6 +1,6 @@
 """AI models for the Creator: image, video, voice (plan "Tech choices": a provider layer).
 
-Text uses Claude (in the Creator). The others switch on by key:
+Text is written by the agent that runs the steps. The others switch on by key:
   image  -> MachGen (Nano-Banana-2)                   when MACHGEN_API_KEY is set   (default, see machgen.py)
             else OpenAI GPT Image (gpt-image-2)       when OPENAI_API_KEY is set
   video  -> MachGen (Vidu-Q3-Turbo, 540p)             when MACHGEN_API_KEY is set   (default, see machgen.py)

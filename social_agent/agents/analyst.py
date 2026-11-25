@@ -8,18 +8,19 @@ Steps (from the plan):
   5. Sends learnings to the Planner (orange loop).
      The Planner reads them from the Business space on its next run.
 """
-import json
 from collections import defaultdict
 from datetime import timedelta
 
-from .. import config, llm
+from .. import config
 from ..business_space import BusinessSpace, now_utc, parse_time
 from ..tools import platforms
 
 SYSTEM = """You are the Analyst in a social media team for one business.
 Look at the post metrics and write 3-5 short, practical learnings for the Planner.
 Compare topic, format, posting time and platform. Use engagement rate
-((likes + comments) / reach). Say when data is too small to be sure."""
+((likes + comments) / reach). Say when data is too small to be sure.
+When the data shows it, include the lines "Best format: <post|carousel|reel|video>" and
+"Best hour: <0-23>": the Planner reads them."""
 
 LEARN_SCHEMA = {"type": "object", "properties": {
     "learnings": {"type": "array", "items": {"type": "string"}}}, "required": ["learnings"]}
@@ -57,15 +58,16 @@ def run(space: BusinessSpace, simulate_time_passed: bool = False) -> dict:
         return {"status": "waiting", "message": "No metrics yet. The first pull is 1 hour after posting."}
     comparison = {key: _average_by(rows, key) for key in ("format", "platform", "hour", "topic")}
 
-    # Step 3: find what works best.
-    if config.MOCK:
-        learnings = [f"Best {key}: {max(groups, key=lambda g: groups[g])} "
-                     f"(engagement {max(groups.values()):.1%})"
-                     for key, groups in comparison.items() if len(groups) > 1]
-        learnings = learnings or ["Not enough different posts yet to compare."]
-    else:
-        prompt = f"Per-post metrics:\n{json.dumps(rows, indent=2)}\n\nAverages:\n{json.dumps(comparison, indent=2)}"
-        learnings = llm.structured(SYSTEM, prompt, "learnings", LEARN_SCHEMA)["learnings"]
+    # Step 3: find what works best. The agent writes the learnings (MOCK: from the averages).
+    if not config.MOCK:
+        return {"status": "needs_text", "step": "save_learnings",
+                "do": "Write the learnings by these rules. Then run save_learnings with {\"learnings\": [...]}.",
+                "rules": SYSTEM, "shape": LEARN_SCHEMA,
+                "data": {"per_post_metrics": rows, "averages": comparison}}
+    learnings = [f"Best {key}: {max(groups, key=lambda g: groups[g])} "
+                 f"(engagement {max(groups.values()):.1%})"
+                 for key, groups in comparison.items() if len(groups) > 1]
+    learnings = learnings or ["Not enough different posts yet to compare."]
 
     # Steps 4-5: save learnings; the Planner reads them next time.
     space.add_learnings(learnings)

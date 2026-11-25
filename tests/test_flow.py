@@ -1,16 +1,15 @@
 """Tests. No API key needed.  Run:  python -m unittest -v
 
 1. Mock mode: the whole loop (interview -> plan -> create -> approval -> post -> measure).
-2. Claude mode with a FAKE Claude: checks the tool-use wiring of Manager and Interviewer.
+2. Agent mode: the agent writes the text after each "needs_text" answer, like Grok Bot does.
 """
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
-from social_agent import config, llm
+from social_agent import config
 
 
 class ScriptedApp:
@@ -49,7 +48,8 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.patches = [mock.patch.object(config, "DATA_DIR", self.tmp),
-                        mock.patch.object(config, "PUBLISH_RETRY_WAIT", 0)]
+                        mock.patch.object(config, "PUBLISH_RETRY_WAIT", 0),
+                        mock.patch.object(config, "MOCK", False)]
         # Real keys on this computer must never reach a test: each test sets the fake keys it needs.
         for key in KEYS:
             self.patches.append(mock.patch.object(config, key, ""))
@@ -57,7 +57,7 @@ class Base(unittest.TestCase):
             p.start()
 
     def tearDown(self):
-        for p in self.patches:
+        for p in reversed(self.patches):
             p.stop()
         shutil.rmtree(self.tmp)
 
@@ -69,32 +69,34 @@ class MockFlowTest(Base):
         self.patches[-1].start()
 
     def test_full_loop(self):
+        from social_agent.agents import interviewer
         from social_agent.agents.manager import Manager
         from social_agent.business_space import BusinessSpace
 
         space = BusinessSpace("test-bakery")
-        # Interview, then news: 1 post -> ask for a change, then approve.
-        app = ScriptedApp(INTERVIEW + ["Make it more fun", "yes"])
-        m = Manager(space, app)
-        m.handle("hi")
+        app = ScriptedApp(INTERVIEW)
+        interviewer.run(space, app)
         self.assertEqual(space.get_brand_brief()["business_name"], "Sweet Crumbs")
         self.assertEqual(space.connected_platforms(), ["instagram", "facebook"])
 
-        m.handle("I baked a new chocolate cake, I want people to know")
-        cal = space.get_calendar()
-        self.assertEqual(len(cal), 1)
-        self.assertEqual(cal[0]["format"], "reel")
+        m = Manager(space, app)
+        plan = m.run_tool("plan_posts", {"task": "I baked a new chocolate cake, I want people to know"})
+        post_id = plan["posts"][0]["id"]
+        self.assertEqual(plan["posts"][0]["format"], "reel")
         self.assertTrue((space.root / "content_plan.json").exists())
-        self.assertTrue(all(p["status"] == "approved" for p in cal))
-        changed = [p for p in cal if p["change_notes"]]
-        self.assertEqual(changed[0]["draft"]["version"], 2)
-        self.assertTrue((space.root / changed[0]["draft"]["files"][0]).exists())
+        self.assertEqual(m.run_tool("create_drafts", {"post_ids": [post_id]})["status"], "drafts_ready")
+        self.assertEqual(m.run_tool("request_changes", {"post_id": post_id, "note": "Make it more fun"})["status"],
+                         "remade")
+        self.assertEqual(m.run_tool("approve_draft", {"post_id": post_id})["status"], "approved")
+        post = space.get_post(post_id)
+        self.assertEqual(post["draft"]["version"], 2)
+        self.assertTrue((space.root / post["draft"]["files"][0]).exists())
 
-        m.handle("publish now")
+        m.run_tool("publish_due", {"post_now": True})
         self.assertTrue(all(p["status"] == "posted" for p in space.get_calendar()))
         self.assertTrue(any(who == "ALERT" for who, _ in app.log))  # hard comment went to owner
 
-        m.handle("how did my posts do?")
+        m.run_tool("run_analyst", {"simulate_time_passed": True})
         self.assertTrue(space.get_learnings())
 
     def test_publisher_retries_then_reschedules(self):
@@ -117,50 +119,54 @@ class MockFlowTest(Base):
         self.assertGreater(parse_time(post["scheduled_at"]), now_utc())
 
 
-# ---- fake Claude ----
-def text(t):
-    return SimpleNamespace(type="text", text=t)
+class AgentWritesTextTest(Base):
+    """No MOCK: every step that needs text asks the agent for it, then takes it."""
 
-
-def tool(name, inp, id_="tu1"):
-    return SimpleNamespace(type="tool_use", name=name, input=inp, id=id_)
-
-
-class FakeClaudeTest(Base):
-    def setUp(self):
-        super().setUp()
-        self.patches.append(mock.patch.object(config, "MOCK", False))
-        self.patches[-1].start()
-
-    def test_manager_routes_to_interviewer(self):
+    def test_agent_loop(self):
         from social_agent.agents.manager import Manager
-        from social_agent.business_space import BusinessSpace
+        from tests.test_planner import make_space
+        space = make_space("agent-bakery")
+        m = Manager(space, ScriptedApp([]))
 
-        brief = {"business_name": "Sweet Crumbs", "business_type": "bakery", "brand": "family",
-                 "brand_voice": "warm", "offers": ["cake"], "audience": "families",
-                 "goals": ["walk-ins"], "platforms": ["instagram"]}
-        replies = [
-            SimpleNamespace(content=[tool("run_interviewer", {})]),                  # Manager
-            SimpleNamespace(content=[text("What is your business called?")]),        # Interviewer
-            SimpleNamespace(content=[tool("connect_accounts", {"platforms": ["Instagram"]})]),
-            SimpleNamespace(content=[tool("save_brand_brief", brief)]),
-            SimpleNamespace(content=[text("All set! What news do you have?")]),       # Manager
-        ]
-        calls = []
+        ask = m.run_tool("plan_posts", {"task": "new chocolate cake"})
+        self.assertEqual(ask["status"], "needs_text")
+        self.assertIn("free_slots", ask["data"])
+        self.assertEqual(space.get_calendar(), [])  # Nothing is planned before the agent writes it.
+        posts = [{"topic": "New chocolate cake", "format": "post", "platforms": ["instagram"],
+                  "scheduled_at": "2020-01-01T10:00:00+05:30",
+                  "script": {"copy_idea": "Cake on a wooden table", "caption": "New!", "hashtags": ["cake"]}}]
+        plan = m.run_tool("plan_posts", {"task": "new chocolate cake", "posts": posts})
+        post_id = plan["posts"][0]["id"]
 
-        def fake(system, messages, tools=None, tool_choice=None):
-            calls.append([dict(m) for m in messages])
-            return replies.pop(0)
+        ask = m.run_tool("create_drafts", {})
+        self.assertEqual(ask["status"], "needs_text")
+        self.assertEqual(ask["data"]["posts"][0]["id"], post_id)
+        draft = {"final_copy": "Our new chocolate cake is here!", "caption": "New cake", "hashtags": ["#cake"],
+                 "image_prompts": ["A chocolate cake on a wooden table, soft window light"]}
+        self.assertEqual(m.run_tool("create_drafts", {"drafts": {post_id: draft}})["status"], "drafts_ready")
+        self.assertEqual(space.get_post(post_id)["draft"]["final_copy"], "Our new chocolate cake is here!")
 
-        with mock.patch.object(llm, "call_claude", fake):
-            space = BusinessSpace("fake")
-            out = Manager(space, ScriptedApp(["Sweet Crumbs"])).handle("hello")
-        self.assertEqual(out, "All set! What news do you have?")
-        self.assertEqual(space.get_brand_brief()["business_name"], "Sweet Crumbs")
-        self.assertEqual(space.connected_platforms(), ["instagram"])
-        # The last Manager call got a tool_result for the interviewer.
-        last = calls[-1][-1]["content"][0]
-        self.assertEqual(last["type"], "tool_result")
+        ask = m.run_tool("request_changes", {"post_id": post_id, "note": "say it is eggless"})
+        self.assertEqual(ask["status"], "needs_text")
+        self.assertEqual(ask["data"]["posts"][0]["owner_change_notes"], ["say it is eggless"])
+        m.run_tool("create_drafts", {"drafts": {post_id: dict(draft, final_copy="Eggless chocolate cake!")}})
+        self.assertEqual(space.get_post(post_id)["draft"]["version"], 2)
+        self.assertEqual(m.run_tool("approve_draft", {"post_id": post_id})["status"], "approved")
+
+        m.run_tool("publish_due", {"post_now": True})
+        comments = m.run_tool("show_comments", {})
+        self.assertEqual(comments["status"], "needs_text")
+        friendly = [c for c in comments["data"]["comments"] if "amazing" in c["text"]]
+        self.assertEqual(len(comments["data"]["comments"]), 1)  # The complaint went to the owner instead.
+        out = m.run_tool("reply_comments", {"replies": [{"post_id": post_id, "comment_id": friendly[0]["comment_id"],
+                                                         "text": "Thank you!"}]})
+        self.assertEqual(out["results"][0]["result"], "replied")
+        self.assertEqual(m.run_tool("show_comments", {})["status"], "nothing_to_do")
+
+        ask = m.run_tool("run_analyst", {"simulate_time_passed": True})
+        self.assertEqual(ask["status"], "needs_text")
+        m.run_tool("save_learnings", {"learnings": ["Best format: reel"]})
+        self.assertEqual(space.get_learnings()[-1]["learning"], "Best format: reel")
 
 
 if __name__ == "__main__":
