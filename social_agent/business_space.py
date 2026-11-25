@@ -3,7 +3,7 @@
 It holds: brand brief, connected accounts, content calendar, media library, learnings.
 Today it is a folder of JSON files: data/businesses/<tenant_id>/
 TODO (plan "Tech choices"): Postgres with row-level security by tenant_id,
-a vector store for learnings, and S3 for the media library.
+a vector store for learnings, and R2 for the media library.
 """
 import json
 import re

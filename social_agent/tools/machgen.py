@@ -1,4 +1,4 @@
-"""MachGen: images and video clips from open diffusion and video models (the Creator's default).
+"""MachGen: images (Nano-Banana-2) and video clips (Vidu-Q3-Turbo) - the Creator's default.
 
 Switches on when MACHGEN_API_KEY is in .env. Get a key: https://www.machgen.ai -> Profile -> API Keys.
 Docs (checked 2026-11-25): https://www.machgen.ai/docs/rest_api , https://www.machgen.ai/docs/reference ,

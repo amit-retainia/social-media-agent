@@ -8,6 +8,8 @@ Steps (from the plan):
 Posts wait in "pending_approval" until the owner acts.
 
 The Owner app:
+  - Grok Bot chat (the default on Grok Bot): each draft goes to Discord (DISCORD_WEBHOOK_URL) as a preview.
+    The owner answers in the Grok chat; the bot runs approve_draft or request_changes (main.py --tool).
   - Phone (Telegram bot), when TELEGRAM_BOT_TOKEN and the owner's chat ID are in .env.
     The owner gets the image or video, the text and two buttons: Approve / Ask for changes.
     `python main.py --bot` keeps listening, so the owner can answer at any time.
@@ -24,7 +26,7 @@ from pathlib import Path
 
 from .. import config
 from ..business_space import BusinessSpace, now_utc, parse_time
-from ..tools import telegram
+from ..tools import discord, telegram
 from ..tools.http import ServiceError
 from . import creator, planner
 
@@ -225,16 +227,33 @@ def send_preview(space: BusinessSpace, post: dict) -> dict:
 
 
 def send_previews(space: BusinessSpace) -> list[dict]:
-    """Send a preview for every pending draft that the phone has not seen yet (this version)."""
-    if not telegram.enabled(space.tenant_id):
+    """Send a preview for every pending draft that the owner has not seen yet (this version).
+    Telegram when it is set up, else Discord."""
+    channel = "telegram" if telegram.enabled(space.tenant_id) else "discord" if discord.enabled() else ""
+    if not channel:
         return []
     sent = []
     for post in space.posts_with_status("pending_approval"):
         req = post.get("approval_request") or {}
-        if req.get("channel") == "telegram" and req.get("version") == post.get("draft", {}).get("version"):
+        if req.get("channel") == channel and req.get("version") == post.get("draft", {}).get("version"):
             continue
-        sent.append(send_preview(space, post))
+        sent.append(send_preview(space, post) if channel == "telegram" else send_discord_preview(space, post))
     return sent
+
+
+def send_discord_preview(space: BusinessSpace, post: dict) -> dict:
+    """The draft's media and text in the Discord channel. The owner answers in the Grok chat."""
+    version = post.get("draft", {}).get("version", 1)
+    text = _preview_text(space, post).rsplit("\n\n", 1)[0]  # Drop the Telegram button line.
+    text = (f"**[{space.tenant_id}] {post['id']}**\n{text}\n\n"
+            f"Answer in the Grok chat: \"approve {post['id']}\" or \"change {post['id']}: <what to change>\".")
+    try:
+        discord.send(text, _preview_files(space, post)[:10])
+    except ServiceError:
+        discord.send(text + "\n(The media could not be attached. Files are in the media library.)")
+    space.update_post(post["id"], approval_request={"channel": "discord", "version": version,
+                                                    "sent_at": now_utc().isoformat()})
+    return {"id": post["id"], "version": version, "channel": "discord"}
 
 
 def poll(wait_seconds: int = 0) -> int:

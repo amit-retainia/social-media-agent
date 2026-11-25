@@ -49,9 +49,9 @@ Follow these steps in order:
 1. Ask about the brand, goals, audience and offers. Also ask for the location,
    brand voice, how many posts per week, and topics to avoid.
 2. Ask for the website. If there is one, call read_website and use what you learn.
-3. Ask which social platforms to use. Supported: {", ".join(platforms.PLATFORMS)}.
-   Call connect_accounts with the list. If an account says "needs_login", tell the owner
-   the message (link it in the Ayrshare dashboard) and go on.
+3. Ask which social platforms to use. Supported: {", ".join(platforms.SUPPORTED)}.
+   Call connect_accounts with the list. If an account says "needs_login" or "not_supported",
+   tell the owner the message and go on.
    Fill timezone from the location (IANA name). Ask about closed days.
 4. Give a short summary (5 lines at most) and ask "Is this correct?".
    When the owner confirms, call save_brand_brief.
@@ -152,7 +152,7 @@ MOCK_QUESTIONS = [
     ("audience", "Who are your customers?"),
     ("goals", "What do you want from social media? (separate with commas)"),
     ("website", "What is your website? (or 'skip')"),
-    ("platforms", f"Which platforms? Choose from: {', '.join(platforms.PLATFORMS)} (separate with commas)"),
+    ("platforms", f"Which platforms? Choose from: {', '.join(platforms.SUPPORTED)} (separate with commas)"),
     ("posts_per_week", "How many posts per week?"),
     ("banned_topics", "Any topics to avoid? (separate with commas, or 'skip')"),
 ]

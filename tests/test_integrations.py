@@ -79,21 +79,38 @@ class AIModelsTest(Base):
                                               "ratio": "1280:720", "duration": 3})
         self.assertEqual(fake.calls[0].headers["X-Runway-Version"], "2024-11-06")
 
-    def test_voice_elevenlabs(self):
+    def test_voice_fish_and_groq_word_times(self):
         from social_agent.tools import ai_models
-        al = {"characters": list("Hello"), "character_start_times_seconds": [0, .1, .2, .3, .4],
-              "character_end_times_seconds": [.1, .2, .3, .4, .5]}
-        fake, patch = http([("POST", "/text-to-speech/", {"audio_base64": base64.b64encode(b"MP3DATA").decode(),
-                                                           "alignment": al, "normalized_alignment": al})])
-        with patch, mock.patch.object(config, "ELEVENLABS_API_KEY", "el-test"):
-            out, alignment = ai_models.voiceover_with_timing("Hello", self.tmp / "voice")
+        from tests.test_creator import make_mp3
+        mp3 = make_mp3(self.tmp / "src.mp3", 2.0)
+        heard = {"words": [{"word": " Hello,", "start": 0.1, "end": 0.5}, {"word": "dear", "start": 0.6, "end": 0.9},
+                           {"word": "friends!", "start": 1.0, "end": 1.6}]}
+        fake, patch = http([("POST", "api.fish.audio/v1/tts", mp3), ("POST", "/audio/transcriptions", heard)])
+        with patch, mock.patch.object(config, "FISH_API_KEY", "fish-test"), \
+                mock.patch.object(config, "GROQ_API_KEY", "gsk-test"):
+            out, alignment = ai_models.voiceover_with_timing("Hello, my friends!", self.tmp / "voice")
         self.assertEqual(out.suffix, ".mp3")
-        self.assertEqual(out.read_bytes(), b"MP3DATA")
-        self.assertEqual(alignment["characters"], list("Hello"))
-        self.assertTrue(fake.calls[0].url.endswith("/with-timestamps"))
-        self.assertEqual(fake.calls[0].params["output_format"], "mp3_44100_128")
-        self.assertEqual(fake.calls[0].headers["xi-api-key"], "el-test")
-        self.assertEqual(fake.calls[0].json["text"], "Hello")
+        self.assertEqual(out.read_bytes(), mp3)
+        self.assertEqual("".join(alignment["characters"]), "Hello, my friends!")
+        starts = alignment["character_start_times_seconds"]
+        self.assertAlmostEqual(starts[0], 0.1)  # "Hello," heard at 0.1 s
+        self.assertAlmostEqual(starts[10], 1.0)  # "friends!" heard at 1.0 s
+        self.assertTrue(0.5 <= starts[7] < 1.0)  # "my" was misheard: placed in the gap
+        tts = fake.calls[0]
+        self.assertEqual(tts.headers["Authorization"], "Bearer fish-test")
+        self.assertEqual(tts.headers["model"], "s2.1-pro-free")
+        self.assertEqual(tts.json["text"], "Hello, my friends!")
+        self.assertEqual(tts.json["reference_id"], config.FISH_VOICE_ID)
+        self.assertEqual(fake.calls[1].data["timestamp_granularities[]"], "word")
+
+    def test_voice_without_groq_is_spread_over_voice_length(self):
+        from social_agent.tools import ai_models
+        from tests.test_creator import make_mp3
+        _, patch = http([("POST", "api.fish.audio/v1/tts", make_mp3(self.tmp / "src.mp3", 2.0))])
+        with patch, mock.patch.object(config, "FISH_API_KEY", "fish-test"), \
+                mock.patch.object(config, "GROQ_API_KEY", ""):
+            _, alignment = ai_models.voiceover_with_timing("One two", self.tmp / "voice")
+        self.assertAlmostEqual(alignment["character_end_times_seconds"][-1], 2.0, delta=0.1)
 
     def test_edit_video_with_ffmpeg(self):
         from social_agent.tools import ai_models
@@ -117,46 +134,68 @@ class AIModelsTest(Base):
         self.assertEqual(warnings, [])  # Captions were burned in.
 
 
-class AyrshareTest(Base):
+class MetaTest(Base):
+    """Instagram and Facebook through Meta's Graph API. Media links come from R2 (faked here)."""
+
     def setUp(self):
         super().setUp()
-        self.patches.append(mock.patch.object(config, "AYRSHARE_API_KEY", "ayr-test"))
+        for name, value in [("INSTAGRAM_ACCESS_TOKEN", "ig-tok"), ("INSTAGRAM_USER_ID", "ig-user"),
+                            ("FACEBOOK_PAGE_ID", "fb-page"), ("FACEBOOK_PAGE_TOKEN", "fb-tok")]:
+            self.patches.append(mock.patch.object(config, name, value))
+            self.patches[-1].start()
+        self.patches.append(mock.patch("social_agent.tools.storage.public_url",
+                                       lambda path, key, tenant=None: f"https://r2.example/{path.name}"))
         self.patches[-1].start()
+        self.patches.append(mock.patch("social_agent.tools.platforms.time.sleep"))
+        self.patches[-1].start()
+        from social_agent.tools import platforms
+        platforms._uploaded.clear()
+
+    def post(self, fmt, names):
+        from social_agent.business_space import BusinessSpace
+        space = BusinessSpace("meta")
+        post = space.add_posts([{"topic": "New cake", "format": fmt, "platforms": ["instagram"],
+                                 "scheduled_at": "2020-01-01T10:00:00+00:00", "script": {}}])[0]
+        files = []
+        for n in names:
+            f = space.media_folder(post["id"]) / n
+            f.write_bytes(b"media")
+            files.append(str(f.relative_to(space.root)))
+        post["draft"] = {"final_copy": "Our new cake!", "hashtags": ["#cake"], "files": files}
+        return space, post
 
     def test_connect(self):
         from social_agent.tools import platforms
-        _, patch = http([("GET", "/api/user", {"activeSocialAccounts": ["instagram", "twitter"]})])
+        _, patch = http([("GET", "graph.instagram.com/v23.0/me", {"user_id": "1", "username": "sweetcrumbs"}),
+                         ("GET", "graph.facebook.com/v23.0/fb-page", {"_status": 400, "error": "Invalid OAuth token"})])
         with patch:
-            self.assertEqual(platforms.connect_account("x")["status"], "connected")
+            self.assertEqual(platforms.connect_account("instagram")["account"], "sweetcrumbs")
             self.assertEqual(platforms.connect_account("facebook")["status"], "needs_login")
+            self.assertEqual(platforms.connect_account("x")["status"], "not_supported")
 
-    def test_publish_with_media_upload_comments_reply_metrics(self):
-        from social_agent.business_space import BusinessSpace
+    def test_instagram_reel_comments_reply_metrics(self):
         from social_agent.tools import platforms
-        space = BusinessSpace("ayr")
-        post = space.add_posts([{"topic": "New cake", "format": "reel", "platforms": ["instagram"],
-                                 "scheduled_at": "2020-01-01T10:00:00+00:00", "script": {}}])[0]
-        clip = space.media_folder(post["id"]) / "v1_9x16_final.mp4"
-        clip.write_bytes(b"video")
-        post["draft"] = {"final_copy": "Our new cake!", "hashtags": ["#cake"],
-                         "files": [str(clip.relative_to(space.root))]}
+        space, post = self.post("reel", ["v1_9x16_final.mp4"])
         fake, patch = http([
-            ("GET", "/media/uploadUrl", {"uploadUrl": "https://upload.example/x", "accessUrl": "https://cdn/x.mp4"}),
-            ("PUT", "upload.example", {}),
-            ("POST", "/api/post", {"status": "success", "id": "ayr1",
-                                   "postIds": [{"platform": "instagram", "id": "ig1", "postUrl": "https://ig/1"}]}),
-            ("GET", "/api/comments/ayr1", {"instagram": [{"commentId": "c1", "comment": "Yum!", "username": "ana"}]}),
-            ("POST", "/comments/reply/c1", {"status": "success"}),
-            ("POST", "/analytics/post", {"instagram": {"analytics": {"likeCount": 12, "commentsCount": 3,
-                                                                    "reachCount": 300, "videoViews": 450}}}),
+            ("POST", "ig-user/media_publish", {"id": "m1"}),
+            ("POST", "ig-user/media", {"id": "cont1"}),
+            ("GET", "/cont1", {"status_code": "FINISHED"}),
+            ("GET", "/m1/comments", {"data": [{"id": "c1", "text": "Yum!", "username": "ana"}]}),
+            ("POST", "/c1/replies", {"id": "r1"}),
+            ("GET", "/m1/insights", {"data": [{"name": "reach", "values": [{"value": 300}]},
+                                              {"name": "views", "values": [{"value": 450}]},
+                                              {"name": "likes", "values": [{"value": 12}]},
+                                              {"name": "comments", "values": [{"value": 3}]}]}),
+            ("GET", "/m1", {"permalink": "https://instagram.com/reel/1"}),
         ])
         with patch:
             res = platforms.publish("instagram", post, space)
-            body = next(c for c in fake.calls if c.url.endswith("/api/post")).json
-            self.assertEqual(body["mediaUrls"], ["https://cdn/x.mp4"])
-            self.assertTrue(body["instagramOptions"]["reels"])
-            self.assertIn("#cake", body["post"])
-            self.assertEqual(res["ayrshare_id"], "ayr1")
+            create = next(c for c in fake.calls if c.url.endswith("ig-user/media"))
+            self.assertEqual(create.params["media_type"], "REELS")
+            self.assertEqual(create.params["video_url"], "https://r2.example/v1_9x16_final.mp4")
+            self.assertIn("#cake", create.params["caption"])
+            self.assertEqual(create.params["access_token"], "ig-tok")
+            self.assertEqual((res["platform_post_id"], res["url"]), ("m1", "https://instagram.com/reel/1"))
             post["publish_results"] = {"instagram": res}
             comments = platforms.fetch_new_comments("instagram", post, space)
             self.assertEqual(comments, [{"id": "c1", "from": "ana", "text": "Yum!"}])
@@ -164,20 +203,81 @@ class AyrshareTest(Base):
             m = platforms.get_metrics("instagram", post, "24h", space)
         self.assertEqual((m["likes"], m["comments"], m["reach"], m["views"]), (12, 3, 300, 450))
 
+    def test_instagram_carousel_and_facebook_photos(self):
+        from social_agent.tools import platforms
+        space, post = self.post("carousel", ["v1_1x1_image1.jpg", "v1_1x1_image2.jpg"])
+        ids = iter(range(100))
+        fake, patch = http([
+            ("POST", "ig-user/media_publish", {"id": "m2"}),
+            ("POST", "ig-user/media", lambda kw: {"id": f"ig{next(ids)}"}),
+            ("GET", "graph.instagram.com/v23.0/ig", {"status_code": "FINISHED"}),
+            ("GET", "/m2", {"permalink": "https://instagram.com/p/2"}),
+            ("POST", "fb-page/photos", lambda kw: {"id": f"ph{next(ids)}"}),
+            ("POST", "fb-page/feed", {"id": "fb-page_99"}),
+        ])
+        with patch:
+            platforms.publish("instagram", post, space)
+            res = platforms.publish("facebook", post, space)
+        creates = [c.params for c in fake.calls if c.url.endswith("ig-user/media")]
+        self.assertEqual([c.get("is_carousel_item") for c in creates], ["true", "true", None])
+        self.assertEqual(creates[2]["media_type"], "CAROUSEL")
+        photos = [c.params for c in fake.calls if c.url.endswith("fb-page/photos")]
+        self.assertEqual([p["published"] for p in photos], ["false", "false"])
+        self.assertEqual(res["platform_post_id"], "fb-page_99")
+
     def test_publish_errors(self):
         from social_agent.tools import platforms
-        post = {"id": "p1", "topic": "t", "format": "post", "platforms": ["linkedin"],
-                "draft": {"final_copy": "hi", "files": []}}
-        _, patch = http([("POST", "/api/post", {"status": "error", "errors": [
-            {"message": "LinkedIn token expired. Please re-link."}]})])
+        space, post = self.post("post", ["v1_1x1_image1.jpg"])
+        _, patch = http([("POST", "ig-user/media", {"_status": 400,
+                                                    "error": "Error validating access token: Session has expired"})])
         with patch, self.assertRaises(platforms.PublishError) as err:
-            platforms.publish("linkedin", post, None)
+            platforms.publish("instagram", post, space)
         self.assertTrue(err.exception.login_expired)
+        with self.assertRaises(platforms.PublishError) as err:
+            platforms.publish("linkedin", post, space)  # Not supported yet: no retry.
+        self.assertTrue(err.exception.permanent)
         # A placeholder image cannot be posted: no retry.
         post["draft"]["files"] = ["media_library/p1/v1_1x1_image1.svg"]
         with self.assertRaises(platforms.PublishError) as err:
-            platforms.publish("linkedin", post, SimpleNamespace(root=self.tmp, tenant_id="t"))
+            platforms.publish("instagram", post, SimpleNamespace(root=self.tmp, tenant_id="t"))
         self.assertTrue(err.exception.permanent)
+
+    def test_keys_per_business(self):
+        from social_agent.tools import platforms
+        with mock.patch.dict("os.environ", {"INSTAGRAM_USER_ID_SWEET_CRUMBS": "own-user"}):
+            self.assertEqual(platforms._keys("instagram", "sweet-crumbs"), ("own-user", "ig-tok"))
+            self.assertEqual(platforms._keys("instagram", "other"), ("ig-user", "ig-tok"))
+
+
+class ApprovalInChatTest(Base):
+    """On Grok Bot: draft previews go to Discord; the owner answers in the chat (Manager tools)."""
+
+    def test_discord_preview_then_change_and_approve(self):
+        from social_agent.agents import creator
+        from social_agent.agents.manager import Manager
+        from tests.test_flow import ScriptedApp
+        from tests.test_planner import make_space
+        space = make_space("chat-bakery")
+        post = space.add_posts([{"topic": "Cake", "format": "post", "platforms": ["instagram"],
+                                 "scheduled_at": "2030-01-01T10:00:00+00:00",
+                                 "script": {"copy_idea": "Cake photo", "caption": "New!", "hashtags": ["#cake"]}}])[0]
+        fake, patch = http([("POST", "discord.example", {})])
+
+        def previews():
+            return [c for c in fake.calls if c.data and "payload_json" in c.data]
+        with patch, mock.patch.object(config, "MOCK", True), \
+                mock.patch.object(config, "DISCORD_WEBHOOK_URL", "https://discord.example/hook"):
+            creator.run(space)
+            self.assertEqual(len(previews()), 1)
+            self.assertIn(f"approve {post['id']}", previews()[0].data["payload_json"])
+            manager = Manager(space, ScriptedApp([]))
+            self.assertEqual([d["id"] for d in manager.run_tool("show_drafts", {})["drafts"]], [post["id"]])
+            out = manager.run_tool("request_changes", {"post_id": post["id"], "note": "say it is eggless"})
+            self.assertEqual(out["draft"]["version"], 2)
+            self.assertEqual(len(previews()), 2)  # The new version is sent again.
+            self.assertEqual(manager.run_tool("approve_draft", {"post_id": post["id"]})["status"], "approved")
+            self.assertIn("error", manager.run_tool("approve_draft", {"post_id": post["id"]}))
+        self.assertEqual(space.get_post(post["id"])["status"], "approved")
 
 
 class OtherServicesTest(Base):
@@ -200,7 +300,7 @@ class OtherServicesTest(Base):
         self.assertEqual(calls[0]["tools"][0]["type"], "web_search_20250305")
 
     def test_services_list(self):
-        with mock.patch.object(config, "OPENAI_API_KEY", "x"), mock.patch.object(config, "AYRSHARE_API_KEY", ""), \
+        with mock.patch.object(config, "OPENAI_API_KEY", "x"), mock.patch.object(config, "INSTAGRAM_USER_ID", ""), \
                 mock.patch.object(config, "MACHGEN_API_KEY", ""):
             status = {name: real for name, real, _ in config.services()}
         self.assertTrue(status["AI images (Creator): OpenAI"])
@@ -209,7 +309,7 @@ class OtherServicesTest(Base):
             status = {name: real for name, real, _ in config.services()}
         self.assertTrue(status["AI images (Creator): MachGen"])  # MachGen is the default.
         self.assertTrue(status["AI video clips (Creator): MachGen"])
-        self.assertFalse(status["Social platforms: connect, post, replies, metrics"])
+        self.assertFalse(status["Instagram: post, replies, metrics"])
 
 
 class CreatorFallbackTest(Base):

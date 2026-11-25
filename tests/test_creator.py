@@ -37,6 +37,13 @@ def make_mp3(path, seconds=4.0):
     return path.read_bytes()
 
 
+def words_for(text, seconds):
+    """Groq Whisper reply: every word of `text`, spread evenly over `seconds`."""
+    words = text.split()
+    step = seconds / len(words)
+    return {"words": [{"word": w, "start": i * step, "end": (i + 1) * step} for i, w in enumerate(words)]}
+
+
 def alignment_for(text, seconds):
     step = seconds / len(text)
     return {"characters": list(text), "character_start_times_seconds": [i * step for i in range(len(text))],
@@ -47,7 +54,7 @@ class CreatorTest(Base):
     def setUp(self):
         super().setUp()
         for name, value in [("MOCK", True), ("OPENAI_API_KEY", ""), ("RUNWAYML_API_SECRET", ""),
-                            ("ELEVENLABS_API_KEY", ""), ("AI_VIDEO_ENABLED", True), ("VIDEO_MODE", "text"),
+                            ("FISH_API_KEY", ""), ("GROQ_API_KEY", ""), ("AI_VIDEO_ENABLED", True), ("VIDEO_MODE", "text"),
                             ("MACHGEN_API_KEY", ""), ("IMAGE_PROVIDER", "auto"), ("VIDEO_PROVIDER", "auto"),
                             ("SLIDESHOW_FALLBACK", True)]:
             self.patches.append(mock.patch.object(config, name, value))
@@ -99,7 +106,7 @@ class CreatorTest(Base):
         self.assertEqual(files[0].suffix, ".jpg")
         self.assertFalse(draft["simulated"])
 
-    def test_reel_runway_elevenlabs_ffmpeg(self):
+    def test_reel_runway_fish_groq_ffmpeg(self):
         from social_agent.agents import creator
         post = self.add("reel", ["instagram", "youtube"], REEL_SCRIPT)
         post = self.space.update_post(post["id"], format="video")  # instagram 9:16, youtube 16:9
@@ -108,18 +115,18 @@ class CreatorTest(Base):
         mp3 = make_mp3(self.tmp / "src.mp3", 4.0)
         tasks = iter(range(100))
         fake, patch = http([
-            ("POST", "/text-to-speech/", {"audio_base64": base64.b64encode(mp3).decode(),
-                                          "alignment": alignment_for(text, 3.8)}),
+            ("POST", "api.fish.audio/v1/tts", mp3),
+            ("POST", "/audio/transcriptions", words_for(text, 3.8)),
             ("POST", "/v1/text_to_video", lambda kw: {"id": f"t{next(tasks)}", "status": "PENDING"}),
             ("GET", "/v1/tasks/", lambda kw: {"status": "SUCCEEDED", "output": ["https://cdn.runway.test/c.mp4"]}),
             ("GET", "cdn.runway.test", mp4)])
         with patch, mock.patch.object(config, "RUNWAYML_API_SECRET", "key"), \
-                mock.patch.object(config, "ELEVENLABS_API_KEY", "el"):
+                mock.patch.object(config, "FISH_API_KEY", "fish"), mock.patch.object(config, "GROQ_API_KEY", "gsk"):
             result = creator.run(self.space)
         draft, files = self.files(post)
         self.assertFalse(draft["simulated"], result)
         self.assertEqual(sorted(f.name for f in files), ["v1_16x9_final.mp4", "v1_9x16_final.mp4"])
-        tts = [c for c in fake.calls if "text-to-speech" in c.url]
+        tts = [c for c in fake.calls if c.url.endswith("/v1/tts")]
         self.assertEqual(len(tts), 1)  # One voiceover per post.
         self.assertEqual(tts[0].json["text"], text)
         runway = [c for c in fake.calls if c.url.endswith("/text_to_video")]
@@ -137,10 +144,10 @@ class CreatorTest(Base):
         mp3 = make_mp3(self.tmp / "v.mp3", 4.0)
         text = " ".join(s["say"] for s in REEL_SCRIPT["script"])
         fake, patch = http([("POST", "/images/generations", {"data": [{"b64_json": img}]}),
-                            ("POST", "/text-to-speech/", {"audio_base64": base64.b64encode(mp3).decode(),
-                                                          "alignment": alignment_for(text, 3.8)})])
+                            ("POST", "api.fish.audio/v1/tts", mp3),
+                            ("POST", "/audio/transcriptions", words_for(text, 3.8))])
         with patch, mock.patch.object(config, "OPENAI_API_KEY", "sk"), \
-                mock.patch.object(config, "ELEVENLABS_API_KEY", "el"):
+                mock.patch.object(config, "FISH_API_KEY", "fish"), mock.patch.object(config, "GROQ_API_KEY", "gsk"):
             creator.run(self.space)
         draft, files = self.files(post)
         self.assertEqual([f.name for f in files], ["v1_9x16_final.mp4"])
@@ -157,7 +164,8 @@ class CreatorTest(Base):
         self.assertTrue(files[0].name.endswith("_final.sim.mp4"))
         self.assertTrue(files[0].exists())  # A playable preview, with captions and scene timing.
         self.assertEqual(len(draft["scenes"]), 2)
-        with mock.patch.object(config, "AYRSHARE_API_KEY", "ayr"):
+        with mock.patch.object(config, "INSTAGRAM_ACCESS_TOKEN", "ig"), \
+                mock.patch.object(config, "INSTAGRAM_USER_ID", "1"):
             with self.assertRaises(platforms.PublishError) as err:
                 platforms.publish("instagram", self.space.get_post(post["id"]), self.space)
         self.assertTrue(err.exception.permanent)
@@ -175,12 +183,13 @@ class CreatorTest(Base):
 
 class MachGenTest(CreatorTest):
     MODELS = {"models": [
-        {"model": "FLUX.2-dev", "aliases": [], "kind": "image", "surfaces": [
-            {"task_type": "T2I", "heights": [768, 1024, 1536], "aspect_ratios": ["1:1", "9:16", "16:9", "4:3"]}]},
-        {"model": "Wan2.2-A14B", "aliases": ["Wan2.2-T2V-A14B"], "kind": "video", "supports_audio": False,
-         "surfaces": [{"task_type": "T2V", "heights": [480, 720], "aspect_ratios": ["16:9", "9:16"],
-                       "durations": [5, 8]},
-                      {"task_type": "I2V", "heights": [480, 720], "durations": [5, 8]}]}]}
+        {"model": "Nano-Banana-2", "aliases": [], "kind": "image", "surfaces": [
+            {"task_type": "T2I", "heights": [1024, 2048, 4096], "aspect_ratios": ["1:1", "9:16", "16:9", "4:5"]}]},
+        {"model": "Vidu-Q3-Turbo", "aliases": [], "kind": "video", "supports_audio": True,
+         "surfaces": [{"task_type": "T2V", "heights": [540, 720], "aspect_ratios": ["16:9", "9:16", "1:1", "4:3"],
+                       "durations": list(range(1, 17))},
+                      {"task_type": "I2V", "heights": [540, 720], "aspect_ratios": [],
+                       "durations": list(range(1, 17))}]}]}
 
     def routes(self):
         """Fake MachGen API: models list, submit, upload, status. Each test adds its own assets route."""
@@ -208,9 +217,9 @@ class MachGenTest(CreatorTest):
         self.assertTrue(all(c.url.startswith("https://api.machgen.ai/") for c in fake.calls))
         self.assertEqual(gens[0].headers["Authorization"], "Bearer MGA_k:s")
         body = gens[0].json
-        self.assertEqual((body["model"], body["task_type"]), ("FLUX.2-dev", "T2I"))
+        self.assertEqual((body["model"], body["task_type"]), ("Nano-Banana-2", "T2I"))
         self.assertIn(body["image_config"]["aspect_ratio"], ("1:1", "9:16"))
-        self.assertIn(body["image_config"]["height"], (1024, 1536))  # Only allowed heights are sent.
+        self.assertEqual(body["image_config"]["height"], 1024)  # Only allowed heights are sent.
         self.assertFalse(any("openai" in c.url for c in fake.calls))
 
     def test_machgen_reel_text_to_video(self):
@@ -225,13 +234,14 @@ class MachGenTest(CreatorTest):
             creator.run(self.space)
         draft, files = self.files(post)
         self.assertEqual(sorted(f.name for f in files), ["v1_16x9_final.sim.mp4", "v1_9x16_final.sim.mp4"])
-        self.assertTrue(draft["simulated"])  # No ElevenLabs key: voice is simulated, so not postable.
+        self.assertTrue(draft["simulated"])  # No Fish Audio key: voice is simulated, so not postable.
         gens = [c.json for c in fake.calls if c.url.endswith("/api/v0/generate")]
         self.assertEqual(len(gens), 4)  # 2 scenes x 2 shapes
         self.assertEqual({g["task_type"] for g in gens}, {"T2V"})
         self.assertEqual(sorted(g["video_config"]["aspect_ratio"] for g in gens), ["16:9", "16:9", "9:16", "9:16"])
-        self.assertTrue(all(g["video_config"]["height"] == 720 and g["video_config"]["duration_secs"] in (5, 8)
+        self.assertTrue(all(g["video_config"]["height"] == 540 and 1 <= g["video_config"]["duration_secs"] <= 16
                             for g in gens))
+        self.assertTrue(all(g["video_config"]["audio"] is False for g in gens))  # Our own voiceover only.
         self.assertEqual(draft.get("warnings", []), [])
 
     def test_machgen_image_to_video_mode(self):
@@ -251,8 +261,9 @@ class MachGenTest(CreatorTest):
         gens = [c.json for c in fake.calls if c.url.endswith("/api/v0/generate")]
         self.assertEqual([g["task_type"] for g in gens], ["T2I", "I2V", "T2I", "I2V"])
         self.assertEqual(gens[1]["src_image_urls"], ["@input/u/abc.png"])
+        self.assertNotIn("aspect_ratio", gens[1]["video_config"])  # Vidu I2V takes it from the image.
         uploads = [c for c in fake.calls if c.url.endswith("/api/v0/upload")]
-        self.assertEqual(uploads[0].headers["X-MachGen-Upload-Model"], "Wan2.2-A14B")
+        self.assertEqual(uploads[0].headers["X-MachGen-Upload-Model"], "Vidu-Q3-Turbo")
 
     def test_machgen_failed_task_gives_warning(self):
         from social_agent.agents import creator

@@ -1,47 +1,39 @@
 """Media storage: gives each media file a public URL, so the social platforms can fetch it.
 
-  Amazon S3   when AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and S3_BUCKET are set (plan "Tech choices").
-  Ayrshare    else, when AYRSHARE_API_KEY is set (Ayrshare media storage).
+  Cloudflare R2  when R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET are set (S3 API).
 The media library on disk stays the master copy (one folder per post).
 """
 import mimetypes
 from pathlib import Path
 
 from .. import config
-from .http import ServiceError, request
+from .http import ServiceError
 
-AYRSHARE = "https://api.ayrshare.com/api"
+
+def r2_on() -> bool:
+    return all([config.R2_ACCOUNT_ID, config.R2_ACCESS_KEY_ID, config.R2_SECRET_ACCESS_KEY, config.R2_BUCKET])
 
 
 def public_url(path: Path, key: str, tenant_id: str | None = None) -> str:
     """Upload `path` and return a URL. `key` is the name in storage, e.g. <tenant>/<post>/<file>."""
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    if config.AWS_ACCESS_KEY_ID and config.AWS_SECRET_ACCESS_KEY and config.S3_BUCKET:
-        return _s3(path, key, content_type)
-    if config.AYRSHARE_API_KEY:
-        return _ayrshare(path, content_type, tenant_id)
-    raise ServiceError("No media storage. Set the S3 keys or AYRSHARE_API_KEY.")
+    if r2_on():
+        return _r2(path, key, content_type)
+    raise ServiceError("No media storage. Set the R2 keys (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, "
+                       "R2_SECRET_ACCESS_KEY, R2_BUCKET).")
 
 
-def _s3(path: Path, key: str, content_type: str) -> str:
-    import boto3  # Imported here, so the app runs without S3.
+def _r2(path: Path, key: str, content_type: str) -> str:
+    import boto3  # Imported here, so the app runs without R2.
+    from botocore.config import Config
 
-    s3 = boto3.client("s3", region_name=config.AWS_REGION, aws_access_key_id=config.AWS_ACCESS_KEY_ID,
-                      aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY)
-    s3.upload_file(str(path), config.S3_BUCKET, key, ExtraArgs={"ContentType": content_type})
-    if config.S3_PUBLIC_BASE_URL:
-        return config.S3_PUBLIC_BASE_URL.rstrip("/") + "/" + key
-    return s3.generate_presigned_url("get_object", Params={"Bucket": config.S3_BUCKET, "Key": key},
+    s3 = boto3.client("s3", endpoint_url=f"https://{config.R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+                      aws_access_key_id=config.R2_ACCESS_KEY_ID, aws_secret_access_key=config.R2_SECRET_ACCESS_KEY,
+                      region_name="auto",
+                      config=Config(signature_version="s3v4", request_checksum_calculation="when_required",
+                                    response_checksum_validation="when_required"))
+    s3.upload_file(str(path), config.R2_BUCKET, key, ExtraArgs={"ContentType": content_type})
+    if config.R2_PUBLIC_BASE_URL:
+        return config.R2_PUBLIC_BASE_URL.rstrip("/") + "/" + key
+    return s3.generate_presigned_url("get_object", Params={"Bucket": config.R2_BUCKET, "Key": key},
                                      ExpiresIn=7 * 24 * 3600)
-
-
-def _ayrshare(path: Path, content_type: str, tenant_id: str | None) -> str:
-    headers = {"Authorization": f"Bearer {config.AYRSHARE_API_KEY}"}
-    profile = config.ayrshare_profile_key(tenant_id)
-    if profile:
-        headers["Profile-Key"] = profile
-    info = request("GET", f"{AYRSHARE}/media/uploadUrl", service="Ayrshare media", headers=headers,
-                   params={"fileName": path.name, "contentType": content_type}).json()
-    request("PUT", info["uploadUrl"], service="Ayrshare media upload",
-            headers={"Content-Type": content_type}, data=path.read_bytes())
-    return info["accessUrl"]

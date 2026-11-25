@@ -1,7 +1,8 @@
 """Alerts to the owner outside the terminal (plan: "push or email alert").
 
+  Discord  when DISCORD_WEBHOOK_URL is set (a channel webhook; the default on Grok Bot).
   Telegram when TELEGRAM_BOT_TOKEN and the owner's chat ID are set (the Owner app on the phone).
-  Webhook  when ALERT_WEBHOOK_URL is set (Slack, Discord or Teams incoming webhook).
+  Webhook  when ALERT_WEBHOOK_URL is set (Slack or Teams incoming webhook).
   Email    when SMTP_HOST and ALERT_EMAIL_TO are set.
 With neither, alerts show only in the terminal and in alerts.json.
 """
@@ -9,7 +10,7 @@ import smtplib
 from email.message import EmailMessage
 
 from .. import config
-from . import telegram
+from . import discord, telegram
 from .http import ServiceError, request
 
 
@@ -21,6 +22,12 @@ def send(business: str, text: str, phone: bool = True) -> list[str]:
         try:
             telegram.send_text(config.telegram_chat_id(business), "🔔 " + message)
             sent.append("telegram")
+        except ServiceError:
+            pass
+    if discord.enabled():
+        try:
+            discord.send("🔔 " + message)
+            sent.append("discord")
         except ServiceError:
             pass
     if config.ALERT_WEBHOOK_URL:

@@ -1,24 +1,29 @@
 """AI models for the Creator: image, video, voice (plan "Tech choices": a provider layer).
 
 Text uses Claude (in the Creator). The others switch on by key:
-  image  -> MachGen (FLUX.2-dev)                      when MACHGEN_API_KEY is set   (default, see machgen.py)
+  image  -> MachGen (Nano-Banana-2)                   when MACHGEN_API_KEY is set   (default, see machgen.py)
             else OpenAI GPT Image (gpt-image-2)       when OPENAI_API_KEY is set
-  video  -> MachGen (Wan2.2-A14B)                     when MACHGEN_API_KEY is set   (default, see machgen.py)
+  video  -> MachGen (Vidu-Q3-Turbo, 540p)             when MACHGEN_API_KEY is set   (default, see machgen.py)
             else Runway (gen4.5)                      when RUNWAYML_API_SECRET is set
-            Text to video, or image to video with VIDEO_MODE=image (an AI image of the scene, then animated).
+            Image to video by default (VIDEO_MODE=image: an AI image of the scene, then animated),
+            or text to video with VIDEO_MODE=text.
             AI_VIDEO_ENABLED=0 turns AI video off. IMAGE_PROVIDER / VIDEO_PROVIDER pick one service by hand.
-  voice  -> ElevenLabs text to speech, with timestamps when ELEVENLABS_API_KEY is set
-            (the timestamps time the captions and the scene cuts)
+  voice  -> Fish Audio (s2.1-pro-free, no cost)       when FISH_API_KEY is set; the whole script in one take
+            word times from Whisper on Groq           when GROQ_API_KEY is set (else spread over the voice length)
+            (the times set the captions and the scene cuts)
 Editing, captions and sizes per platform are in media_edit.py (ffmpeg + Pillow, no key).
 With no key, each one writes a clearly marked placeholder file, so the flow still runs.
 To swap a provider, change only the matching function in this file.
 Docs checked 2026-11-25:
   https://developers.openai.com/api/reference/resources/images
   https://docs.dev.runwayml.com/api/
-  https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps
+  https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech
+  https://console.groq.com/docs/speech-to-text
 """
 import base64
+import difflib
 import json
+import re
 import time
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -26,11 +31,12 @@ from xml.sax.saxutils import escape
 from .. import config
 from . import machgen
 from .http import ServiceError, request
-from .media_edit import PIXELS, card_image, ffmpeg_exe  # noqa: F401 - ffmpeg_exe kept for old imports
+from .media_edit import PIXELS, card_image, ffmpeg_exe, media_duration  # noqa: F401 - ffmpeg_exe kept for old imports
 
 OPENAI = "https://api.openai.com/v1"
 RUNWAY = "https://api.dev.runwayml.com/v1"
-ELEVENLABS = "https://api.elevenlabs.io/v1"
+FISH_TTS = "https://api.fish.audio/v1/tts"
+GROQ_WHISPER = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 # Size for each platform and format (plan: "sizes each file per platform").
 PLATFORM_SIZES = {
@@ -182,22 +188,77 @@ def generate_voiceover(text: str, out_path: Path) -> Path:
 
 
 def voiceover_with_timing(text: str, out_path: Path) -> tuple[Path, dict | None]:
-    """ElevenLabs text to speech with timestamps. Returns (mp3 file, alignment) or a placeholder."""
-    if not config.ELEVENLABS_API_KEY:
+    """Fish Audio reads the whole script in one take. Whisper on Groq times each word.
+    Returns (mp3 file, alignment: times for each character of OUR text) or a placeholder."""
+    if not config.FISH_API_KEY:
         out_path = out_path.with_suffix(".voiceover.txt")
         out_path.write_text(text, encoding="utf-8")
         return out_path, None
-    resp = request("POST", f"{ELEVENLABS}/text-to-speech/{config.ELEVENLABS_VOICE_ID}/with-timestamps",
-                   service="ElevenLabs", params={"output_format": "mp3_44100_128"},
-                   headers={"xi-api-key": config.ELEVENLABS_API_KEY},
-                   json={"text": text, "model_id": config.ELEVENLABS_MODEL})
-    data = resp.json()
+    resp = request("POST", FISH_TTS, service="Fish Audio", timeout=300,
+                   headers={"Authorization": f"Bearer {config.FISH_API_KEY}", "model": config.FISH_MODEL},
+                   json={"text": text, "reference_id": config.FISH_VOICE_ID, "format": "mp3", "mp3_bitrate": 192,
+                         "prosody": {"speed": config.FISH_SPEED}})
     out_path = out_path.with_suffix(".mp3")
-    out_path.write_bytes(base64.b64decode(data["audio_base64"]))
-    alignment = data.get("alignment")  # Times for each character of OUR text.
-    if alignment:
-        out_path.with_suffix(".timing.json").write_text(json.dumps(alignment), encoding="utf-8")
+    out_path.write_bytes(resp.content)
+    heard = heard_words(out_path) if config.GROQ_API_KEY else []
+    alignment = _alignment(text, heard, media_duration(out_path))
+    out_path.with_suffix(".timing.json").write_text(json.dumps(alignment), encoding="utf-8")
     return out_path, alignment
+
+
+def heard_words(voice: Path) -> list[dict]:
+    """Every spoken word with its start and end (seconds), from Whisper on Groq."""
+    resp = request("POST", GROQ_WHISPER, service="Groq Whisper", timeout=300,
+                   headers={"Authorization": f"Bearer {config.GROQ_API_KEY}"},
+                   data={"model": config.GROQ_WHISPER_MODEL, "temperature": "0", "response_format": "verbose_json",
+                         "timestamp_granularities[]": "word"},
+                   files={"file": (voice.name, voice.read_bytes(), "audio/mpeg")})
+    return [{"w": w["word"].strip(), "s": w["start"], "e": w["end"]} for w in resp.json().get("words", [])]
+
+
+def _norm(word: str) -> str:
+    return re.sub(r"\W", "", word.lower())
+
+
+def _alignment(text: str, heard: list[dict], total: float) -> dict:
+    """Times for each character of `text`. Script words matched to heard words take their times;
+    the rest (or all, with no word timings) are spread over the gaps by length."""
+    words = text.split()
+    times: list[tuple[float, float] | None] = [None] * len(words)
+    matcher = difflib.SequenceMatcher(None, [_norm(w) for w in words], [_norm(h["w"]) for h in heard], autojunk=False)
+    for block in matcher.get_matching_blocks():
+        for k in range(block.size):
+            h = heard[block.b + k]
+            times[block.a + k] = (h["s"], h["e"])
+    i = 0
+    while i < len(words):
+        if times[i]:
+            i += 1
+            continue
+        j = i
+        while j < len(words) and not times[j]:
+            j += 1
+        lo = times[i - 1][1] if i else 0.0
+        hi = max(times[j][0] if j < len(words) else total, lo)
+        size = sum(len(w) for w in words[i:j])
+        t = lo
+        for k in range(i, j):
+            step = (hi - lo) * len(words[k]) / size
+            times[k] = (t, t + step)
+            t += step
+        i = j
+    chars, starts, ends = [], [], []
+    for n, (word, (s, e)) in enumerate(zip(words, times)):
+        if n:
+            chars.append(" ")
+            starts.append(ends[-1])
+            ends.append(s)
+        step = (e - s) / len(word)
+        for c, ch in enumerate(word):
+            chars.append(ch)
+            starts.append(s + c * step)
+            ends.append(s + (c + 1) * step)
+    return {"characters": chars, "character_start_times_seconds": starts, "character_end_times_seconds": ends}
 
 
 # ---------------- simulated clip ----------------

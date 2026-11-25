@@ -24,6 +24,7 @@ The business owner talks only to you. You run the team with your tools:
    show_plan        - read the content plan (content_plan.json).
 3. create_drafts    - the Creator makes text, images and videos.
 4. owner_review     - the owner previews each draft: approve, or ask for changes.
+   show_drafts / approve_draft / request_changes - the same, one step at a time.
 5. publish_due      - the Publisher posts approved posts at their time and replies to comments.
 6. run_analyst      - the Analyst measures results and sends learnings to the Planner.
 Also: show_business_space, update_brand_brief.
@@ -65,6 +66,15 @@ TOOLS = [
          "post_ids": {"type": "array", "items": {"type": "string"}}}}},
     {"name": "owner_review", "description": "Show drafts to the owner for approval or changes.",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "show_drafts", "description": "Drafts waiting for approval: text, time, platforms and media files.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "approve_draft", "description": "The owner approved this draft: it goes to the Publisher.",
+     "input_schema": {"type": "object", "properties": {"post_id": {"type": "string"}}, "required": ["post_id"]}},
+    {"name": "request_changes",
+     "description": "The owner wants changes: the Creator remakes the draft with the note and sends a new preview.",
+     "input_schema": {"type": "object", "properties": {
+         "post_id": {"type": "string"}, "note": {"type": "string", "description": "The owner's words"}},
+         "required": ["post_id", "note"]}},
     {"name": "publish_due", "description": "Publisher posts approved posts whose time has come, and replies to comments.",
      "input_schema": {"type": "object", "properties": {
          "post_now": {"type": "boolean", "description": "Post all approved posts now, ignoring the set time"}}}},
@@ -78,6 +88,16 @@ TOOLS = [
     {"name": "update_brand_brief", "description": "Change fields in the brand brief.",
      "input_schema": {"type": "object", "properties": {"changes": {"type": "object"}}, "required": ["changes"]}},
 ]
+
+
+def _draft_view(space: BusinessSpace, post: dict) -> dict:
+    """What the owner needs to decide: the text, when and where, and the media files (full paths)."""
+    d = post.get("draft", {})
+    return {"id": post["id"], "topic": post["topic"], "format": post["format"], "platforms": post["platforms"],
+            "scheduled_at": post["scheduled_at"], "version": d.get("version"), "text": d.get("final_copy"),
+            "caption": d.get("caption"), "hashtags": d.get("hashtags"),
+            "files": [str(space.root / f) for f in d.get("files", [])],
+            "simulated": d.get("simulated", False), "warnings": d.get("warnings", [])}
 
 
 class Manager:
@@ -101,6 +121,19 @@ class Manager:
             return creator.run(s, args.get("post_ids"))
         if name == "owner_review":
             return owner_approval.run(s, app)
+        if name == "show_drafts":
+            return {"drafts": [_draft_view(s, p) for p in s.posts_with_status("pending_approval")]}
+        if name in ("approve_draft", "request_changes"):
+            post = s.get_post(args["post_id"])
+            if not post or post["status"] != "pending_approval":
+                return {"error": f"{args['post_id']} is not a draft waiting for approval. Use show_drafts."}
+            if name == "approve_draft":
+                post = owner_approval.approve(s, post["id"], via="chat")
+                return {"status": "approved", "id": post["id"], "scheduled_at": post["scheduled_at"],
+                        "platforms": post["platforms"]}
+            owner_approval.request_changes(s, post["id"], args["note"], via="chat")
+            owner_approval.send_previews(s)
+            return {"status": "remade", "draft": _draft_view(s, s.get_post(post["id"]))}
         if name == "publish_due":
             return publisher.run(s, app, post_now=args.get("post_now", False))
         if name == "run_analyst":

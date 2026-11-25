@@ -37,15 +37,15 @@ MOCK = (not API_KEY) or _env("MOCK") == "1"
 # ---- MachGen: images and video clips from open models (the Creator's default) ----
 MACHGEN_API_KEY = _env("MACHGEN_API_KEY")
 MACHGEN_API_URL = _env("MACHGEN_API_URL", "https://api.machgen.ai")
-MACHGEN_IMAGE_MODEL = _env("MACHGEN_IMAGE_MODEL", "FLUX.2-dev")
-MACHGEN_VIDEO_MODEL = _env("MACHGEN_VIDEO_MODEL", "Wan2.2-A14B")
-MACHGEN_VIDEO_HEIGHT = int(_env("MACHGEN_VIDEO_HEIGHT", "720"))
+MACHGEN_IMAGE_MODEL = _env("MACHGEN_IMAGE_MODEL", "Nano-Banana-2")
+MACHGEN_VIDEO_MODEL = _env("MACHGEN_VIDEO_MODEL", "Vidu-Q3-Turbo")
+MACHGEN_VIDEO_HEIGHT = int(_env("MACHGEN_VIDEO_HEIGHT", "540"))  # Vidu Q3 Turbo: 540 (cheaper) or 720
 # Which service makes images / video clips. auto = MachGen if its key is set, else the other one.
 IMAGE_PROVIDER = _env("IMAGE_PROVIDER", "auto").lower()   # auto, machgen, openai
 VIDEO_PROVIDER = _env("VIDEO_PROVIDER", "auto").lower()   # auto, machgen, runway
 # How each clip is made: "text" (text to video) or "image" (make an AI image of the scene first,
 # then animate it: same look as your photo posts).
-VIDEO_MODE = _env("VIDEO_MODE", _env("RUNWAY_MODE", "text")).lower()
+VIDEO_MODE = _env("VIDEO_MODE", _env("RUNWAY_MODE", "image")).lower()
 
 # ---- Images (OpenAI GPT Image). gpt-image-1 was shut down on 2026-10-23, so the default is gpt-image-2. ----
 OPENAI_API_KEY = _env("OPENAI_API_KEY")
@@ -65,23 +65,32 @@ BURN_IN_CAPTIONS = _flag("BURN_IN_CAPTIONS", True)
 CAPTION_FONT = _env("CAPTION_FONT")
 VIDEO_TIMEOUT_SECONDS = int(_env("VIDEO_TIMEOUT_SECONDS", "900"))
 
-# ---- Voiceover (ElevenLabs) ----
-ELEVENLABS_API_KEY = _env("ELEVENLABS_API_KEY")
-ELEVENLABS_VOICE_ID = _env("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
-ELEVENLABS_MODEL = _env("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+# ---- Voiceover (Fish Audio; model s2.1-pro-free costs nothing) ----
+FISH_API_KEY = _env("FISH_API_KEY")
+FISH_VOICE_ID = _env("FISH_VOICE_ID", "d8f13232599c4f60b5df3232ddededca")  # Fish voice reference_id
+FISH_MODEL = _env("FISH_MODEL", "s2.1-pro-free")
+FISH_SPEED = float(_env("FISH_SPEED", "1.0"))
+# ---- Word timings for captions and scene cuts (Whisper on Groq, free tier) ----
+GROQ_API_KEY = _env("GROQ_API_KEY")
+GROQ_WHISPER_MODEL = _env("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
 
-# ---- Social platforms (Ayrshare: Instagram, Facebook, X, LinkedIn, TikTok, YouTube) ----
-AYRSHARE_API_KEY = _env("AYRSHARE_API_KEY")
-AYRSHARE_PROFILE_KEY = _env("AYRSHARE_PROFILE_KEY")  # Optional: one Ayrshare profile per business.
+# ---- Social platforms: Instagram and Facebook through Meta's Graph API (tools/platforms.py) ----
+# Many businesses: add _<BUSINESS> to a key name, e.g. INSTAGRAM_USER_ID_SWEET_CRUMBS (see for_business).
+INSTAGRAM_ACCESS_TOKEN = _env("INSTAGRAM_ACCESS_TOKEN")  # Instagram API with Instagram Login
+INSTAGRAM_USER_ID = _env("INSTAGRAM_USER_ID")
+FACEBOOK_PAGE_ID = _env("FACEBOOK_PAGE_ID")
+FACEBOOK_PAGE_TOKEN = _env("FACEBOOK_PAGE_TOKEN")  # A Page access token
 
-# ---- Media storage (optional; Amazon S3). Without it, media goes to Ayrshare's media storage. ----
-AWS_ACCESS_KEY_ID = _env("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = _env("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = _env("AWS_REGION", "us-east-1")
-S3_BUCKET = _env("S3_BUCKET")
-S3_PUBLIC_BASE_URL = _env("S3_PUBLIC_BASE_URL")  # Optional, e.g. a CloudFront URL.
+# ---- Media storage: Cloudflare R2. Meta downloads each post's media from an R2 link. ----
+R2_ACCOUNT_ID = _env("R2_ACCOUNT_ID")
+R2_ACCESS_KEY_ID = _env("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = _env("R2_SECRET_ACCESS_KEY")
+R2_BUCKET = _env("R2_BUCKET")
+R2_PUBLIC_BASE_URL = _env("R2_PUBLIC_BASE_URL")  # Optional, e.g. a custom domain. Empty = 7-day signed links.
 
-# ---- Alerts to the owner (optional): chat webhook and/or email ----
+# ---- Alerts and draft previews to the owner: Discord channel webhook ----
+DISCORD_WEBHOOK_URL = _env("DISCORD_WEBHOOK_URL")  # Channel -> Edit -> Integrations -> Webhooks
+# ---- Other alerts (optional): chat webhook and/or email ----
 ALERT_WEBHOOK_URL = _env("ALERT_WEBHOOK_URL")  # Slack, Discord or Teams incoming webhook.
 SMTP_HOST = _env("SMTP_HOST")
 SMTP_PORT = int(_env("SMTP_PORT", "587"))
@@ -116,13 +125,13 @@ SIMULATE_FAIL_RATE = float(_env("SIMULATE_FAIL_RATE", "0"))
 METRIC_CHECKPOINTS = {"1h": 1, "24h": 24, "7d": 24 * 7}
 
 
-def ayrshare_profile_key(tenant_id: str | None) -> str:
-    """Per-business profile key: AYRSHARE_PROFILE_KEY_<BUSINESS> (e.g. _MY_BAKERY), else the default."""
+def for_business(name: str, tenant_id: str | None) -> str:
+    """A key for one business: <NAME>_<BUSINESS> (e.g. INSTAGRAM_USER_ID_SWEET_CRUMBS), else <NAME>."""
     if tenant_id:
-        own = _env("AYRSHARE_PROFILE_KEY_" + tenant_id.upper().replace("-", "_"))
+        own = _env(f"{name}_" + tenant_id.upper().replace("-", "_"))
         if own:
             return own
-    return AYRSHARE_PROFILE_KEY
+    return globals().get(name, "")
 
 
 def telegram_chat_id(tenant_id: str | None) -> str:
@@ -156,7 +165,7 @@ def _video_provider() -> str:
 
 def services() -> list[tuple[str, bool, str]]:
     """(service, is_real, what to set) for every outside service."""
-    s3 = all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET])
+    r2 = all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET])
     return [
         ("Claude (all agents' text)", not MOCK, "ANTHROPIC_API_KEY"),
         ("Trends and web search (Planner)", not MOCK and TRENDS_WEB_SEARCH, "ANTHROPIC_API_KEY"),
@@ -166,14 +175,20 @@ def services() -> list[tuple[str, bool, str]]:
          bool(_video_provider()), "MACHGEN_API_KEY (or RUNWAYML_API_SECRET)"),
         ("Slideshow video from AI images (Creator, used when AI video is off)",
          bool(_image_provider()) and SLIDESHOW_FALLBACK, "MACHGEN_API_KEY"),
-        ("Voiceover (Creator)", bool(ELEVENLABS_API_KEY), "ELEVENLABS_API_KEY"),
+        ("Voiceover (Creator): Fish Audio", bool(FISH_API_KEY), "FISH_API_KEY"),
+        ("Word timings for captions (Creator): Whisper on Groq", bool(GROQ_API_KEY),
+         "GROQ_API_KEY (else timings are estimated from the voice length)"),
         ("Video editing, captions, sizes per platform (Creator)", True, "built in (ffmpeg + Pillow)"),
-        ("Social platforms: connect, post, replies, metrics", bool(AYRSHARE_API_KEY), "AYRSHARE_API_KEY"),
-        ("Media storage for posting", s3 or bool(AYRSHARE_API_KEY), "S3 keys, or AYRSHARE_API_KEY"),
+        ("Instagram: post, replies, metrics", bool(INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID),
+         "INSTAGRAM_ACCESS_TOKEN + INSTAGRAM_USER_ID"),
+        ("Facebook Page: post, replies, metrics", bool(FACEBOOK_PAGE_ID and FACEBOOK_PAGE_TOKEN),
+         "FACEBOOK_PAGE_ID + FACEBOOK_PAGE_TOKEN"),
+        ("Media storage for posting (Cloudflare R2)", r2, "R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET"),
+        ("Owner alerts and draft previews (Discord)", bool(DISCORD_WEBHOOK_URL), "DISCORD_WEBHOOK_URL"),
         ("Owner app on the phone (Telegram): preview, approve, ask for changes, alerts",
          bool(TELEGRAM_BOT_TOKEN and (TELEGRAM_CHAT_ID or any(
              k.startswith("TELEGRAM_CHAT_ID_") and v.strip() for k, v in os.environ.items()))),
-         "TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (run --telegram-setup); else the terminal"),
+         "optional: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (on Grok Bot, owners approve in the chat)"),
         ("Owner alerts by webhook", bool(ALERT_WEBHOOK_URL), "ALERT_WEBHOOK_URL"),
         ("Owner alerts by email", bool(SMTP_HOST and ALERT_EMAIL_TO), "SMTP_HOST + ALERT_EMAIL_TO"),
         ("Website reader (Interviewer)", True, "no key needed"),

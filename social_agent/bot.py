@@ -50,6 +50,19 @@ def tick(app=None) -> None:
             app.say("Bot", f"{space.tenant_id}: error: {exc}")
 
 
+def once() -> None:
+    """`python main.py --once`: one round, then exit. For schedulers that cannot keep a process running
+    (Grok Bot routine, cron): read the owner's phone answers, then previews, reminders and the Publisher.
+    Telegram keeps unread answers for 24 hours, so run this every 5 to 15 minutes."""
+    app = LogApp()
+    if config.TELEGRAM_BOT_TOKEN:
+        try:
+            app.say("Bot", f"{owner_approval.poll(wait_seconds=0)} phone answer(s) read.")
+        except telegram.ServiceError as exc:
+            app.say("Bot", f"Telegram error: {exc}")
+    tick(app)
+
+
 def serve(rounds: int | None = None) -> None:
     app = LogApp()
     if not config.TELEGRAM_BOT_TOKEN:

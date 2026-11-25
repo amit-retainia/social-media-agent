@@ -13,7 +13,8 @@ Gets: script from the Planner; media from AI models.
 Gives: draft to Owner approval; files to the media library.
 
 Outside services (each switches on when its key is in .env; see tools/ai_models.py):
-  images and video clips: MachGen (default; else OpenAI images, Runway video)   voiceover: ElevenLabs
+  images and video clips: MachGen (Nano-Banana-2, Vidu-Q3-Turbo; else OpenAI images, Runway video)
+  voiceover: Fish Audio, word times: Whisper on Groq
   edit, captions and sizes per platform: ffmpeg + Pillow (no key).
 The owner can also give own photos or clips: media_library/<post id>/owner/ (used before AI).
 Media library per post: script.json, draft_vN.json, raw images, clips, voiceover, captions .srt,
@@ -172,7 +173,7 @@ def _make_video(draft, post, aspects, owner_media, folder, version, warnings):
     scenes = [dict(s, voiceover=" ".join(s.get("voiceover", "").split())) for s in scenes]
     draft["scenes"] = scenes
 
-    # Voiceover once per post. ElevenLabs timestamps time the scene cuts and the captions.
+    # Voiceover once per post (Fish Audio, one take). Word times (Groq Whisper) set the scene cuts and captions.
     text = " ".join(s["voiceover"] for s in scenes)
     try:
         voice, alignment = ai_models.voiceover_with_timing(text, folder / f"v{version}_voiceover")

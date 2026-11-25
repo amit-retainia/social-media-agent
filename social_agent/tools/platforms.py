@@ -1,16 +1,20 @@
-"""Social platforms: Instagram, Facebook, X, LinkedIn, TikTok, YouTube.
+"""Social platforms: Instagram and Facebook, straight through Meta's Graph API (no paid aggregator).
 
-Real: Ayrshare (one API for all six platforms), when AYRSHARE_API_KEY is set.
-  The plan's option: "start with an aggregator (e.g. Ayrshare) for speed, then move to direct APIs".
-  The owner links each social account once in the Ayrshare dashboard (OAuth). Ayrshare keeps the
-  tokens, so no tokens are stored in this project.
-  Many businesses: give each business its own Ayrshare profile key (see config.ayrshare_profile_key).
-Simulated: when the key is missing. Nothing is posted.
+  Instagram  Instagram API with Instagram Login (graph.instagram.com), a professional (business or creator)
+             account. Keys: INSTAGRAM_ACCESS_TOKEN, INSTAGRAM_USER_ID.
+  Facebook   a Facebook Page (graph.facebook.com). Keys: FACEBOOK_PAGE_ID, FACEBOOK_PAGE_TOKEN.
+  Many businesses: add _<BUSINESS> to each key name (capitals, "-" becomes "_"), e.g. INSTAGRAM_USER_ID_SWEET_CRUMBS.
+  Meta downloads the media from a link, so posting needs Cloudflare R2 (storage.py).
+  X, LinkedIn, TikTok and YouTube: not supported yet.
+Simulated: when a platform's keys are missing. Nothing is posted.
 
 Functions: connect_account, publish, fetch_new_comments, reply, get_metrics.
+Docs (checked 2026-11-25): https://developers.facebook.com/docs/instagram-platform/content-publishing ,
+  https://developers.facebook.com/docs/pages-api/posts
 """
 import hashlib
 import random
+import time
 
 from .. import config
 from ..business_space import now_utc
@@ -19,9 +23,10 @@ from .ai_models import is_placeholder, size_for
 from .http import ServiceError, request
 
 PLATFORMS = ["instagram", "facebook", "x", "linkedin", "tiktok", "youtube"]
-AYRSHARE = "https://api.ayrshare.com/api"
-AYRSHARE_NAMES = {"x": "twitter"}  # Our name -> Ayrshare name. Others are the same.
-LOGIN_WORDS = ("token", "expired", "reauthor", "re-link", "relink", "not linked", "unauthor", "session")
+SUPPORTED = ("instagram", "facebook")
+INSTAGRAM = "https://graph.instagram.com/v23.0"
+FACEBOOK = "https://graph.facebook.com/v23.0"
+LOGIN_WORDS = ("token", "expired", "session", "oauth", "permission")
 
 _uploaded: dict[str, str] = {}  # Local file -> public URL (avoids uploading a file twice).
 
@@ -33,48 +38,73 @@ class PublishError(Exception):
         self.permanent = permanent  # True = do not retry (for example a placeholder file).
 
 
-def is_real() -> bool:
-    return bool(config.AYRSHARE_API_KEY)
-
-
 def normalise(name: str) -> str:
     name = name.strip().lower()
     aliases = {"ig": "instagram", "insta": "instagram", "fb": "facebook", "twitter": "x", "yt": "youtube"}
     return aliases.get(name, name)
 
 
-def _headers(tenant_id: str | None) -> dict:
-    headers = {"Authorization": f"Bearer {config.AYRSHARE_API_KEY}", "Content-Type": "application/json"}
-    profile = config.ayrshare_profile_key(tenant_id)
-    if profile:
-        headers["Profile-Key"] = profile
-    return headers
+def _tenant(space) -> str | None:
+    return getattr(space, "tenant_id", None)
+
+
+def _keys(platform: str, tenant_id: str | None) -> tuple[str, str]:
+    """(account id, token) for this business, or ("", "")."""
+    if platform == "instagram":
+        return (config.for_business("INSTAGRAM_USER_ID", tenant_id),
+                config.for_business("INSTAGRAM_ACCESS_TOKEN", tenant_id))
+    if platform == "facebook":
+        return config.for_business("FACEBOOK_PAGE_ID", tenant_id), config.for_business("FACEBOOK_PAGE_TOKEN", tenant_id)
+    return "", ""
+
+
+def is_real(platform: str = "instagram", tenant_id: str | None = None) -> bool:
+    return all(_keys(platform, tenant_id))
+
+
+def _api(platform: str, method: str, path: str, token: str, **params) -> dict:
+    base = INSTAGRAM if platform == "instagram" else FACEBOOK
+    try:
+        return request(method, f"{base}/{path}", service=platform.title(),
+                       params={**params, "access_token": token}).json()
+    except ServiceError as exc:
+        raise PublishError(str(exc), login_expired=_is_login_error(exc.body)) from exc
+
+
+def _is_login_error(text: str) -> bool:
+    return any(w in (text or "").lower() for w in LOGIN_WORDS)
 
 
 # ---------------- connect ----------------
 def connect_account(platform: str, tenant_id: str | None = None) -> dict:
-    """Check that the account is linked. Real: asks Ayrshare which accounts are linked."""
+    """Check that the account's keys work."""
     platform = normalise(platform)
     if platform not in PLATFORMS:
         return {"status": "not_supported"}
-    if not is_real():
+    if platform not in SUPPORTED:
+        return {"status": "not_supported", "message": f"{platform} is not supported yet. Use instagram or facebook."}
+    if not is_real(platform, tenant_id):
         return {"status": "connected", "mode": "simulated", "connected_at": now_utc().isoformat()}
+    account, token = _keys(platform, tenant_id)
     try:
-        user = request("GET", f"{AYRSHARE}/user", service="Ayrshare", headers=_headers(tenant_id)).json()
-    except ServiceError as exc:
-        return {"status": "error", "mode": "ayrshare", "message": str(exc)}
-    linked = {normalise(p) for p in user.get("activeSocialAccounts", [])}
-    if platform in linked:
-        return {"status": "connected", "mode": "ayrshare", "connected_at": now_utc().isoformat()}
-    return {"status": "needs_login", "mode": "ayrshare",
-            "message": f"Link your {platform} account at https://app.ayrshare.com (Social Accounts), "
-                       "then say 'connect my accounts again'."}
+        if platform == "instagram":
+            me = _api(platform, "GET", "me", token, fields="user_id,username")
+            name = me.get("username")
+        else:
+            name = _api(platform, "GET", account, token, fields="name").get("name")
+    except PublishError as exc:
+        return {"status": "needs_login", "mode": "meta",
+                "message": f"The {platform} token does not work ({str(exc)[:150]}). Make a new token and put it in .env."}
+    return {"status": "connected", "mode": "meta", "account": name, "connected_at": now_utc().isoformat()}
 
 
 # ---------------- publish ----------------
 def publish(platform: str, post: dict, space=None) -> dict:
     """Post one approved post on one platform. Raises PublishError on failure."""
-    if not is_real():
+    if platform not in SUPPORTED:
+        raise PublishError(f"{platform} is not supported yet.", permanent=True)
+    tenant = _tenant(space)
+    if not is_real(platform, tenant):
         if random.random() < config.SIMULATE_FAIL_RATE:
             raise PublishError(f"{platform} API error (simulated)")
         return {"platform_post_id": f"{platform}-{post['id']}", "url": f"https://{platform}.example/{post['id']}",
@@ -87,40 +117,53 @@ def publish(platform: str, post: dict, space=None) -> dict:
         tags = " ".join(draft.get("hashtags", []))
         if tags and tags not in text:
             text += "\n\n" + tags
+    urls = _media_urls(platform, post, space) if space is not None else []
+    if not urls:
+        raise PublishError(f"{platform} post needs an image or video, and this post has none.", permanent=True)
+    account, token = _keys(platform, tenant)
     is_video = post["format"] in ("reel", "video")
-    media_urls = _media_urls(platform, post, space) if space is not None else []
-    if not media_urls and platform in ("instagram", "tiktok", "youtube"):
-        raise PublishError(f"{platform} needs an image or video, and this post has none.", permanent=True)
-
-    name = AYRSHARE_NAMES.get(platform, platform)
-    body: dict = {"post": text, "platforms": [name]}
-    if media_urls:
-        body["mediaUrls"] = media_urls
-        body["isVideo"] = is_video
-    if platform == "youtube":
-        body["youTubeOptions"] = {"title": post["topic"][:100], "shorts": post["format"] == "reel",
-                                  "visibility": "public"}
-    if platform == "instagram" and post["format"] == "reel":
-        body["instagramOptions"] = {"reels": True, "shareReelsFeed": True}
-    try:
-        data = request("POST", f"{AYRSHARE}/post", service="Ayrshare", headers=_headers(_tenant(space)),
-                       json=body).json()
-    except ServiceError as exc:
-        raise PublishError(str(exc), login_expired=_is_login_error(exc.body)) from exc
-    if data.get("status") != "success":
-        message = str(data.get("errors") or data.get("message") or data)
-        raise PublishError(f"Ayrshare: {message[:300]}", login_expired=_is_login_error(message))
-    item = next((p for p in data.get("postIds", []) if p.get("platform") == name), {})
-    return {"ayrshare_id": data.get("id"), "platform_post_id": item.get("id"),
-            "url": item.get("postUrl"), "mode": "ayrshare"}
+    if platform == "instagram":
+        media_id = _instagram(account, token, text, urls, is_video)
+        link = _api(platform, "GET", media_id, token, fields="permalink").get("permalink")
+        return {"platform_post_id": media_id, "url": link, "mode": "meta"}
+    post_id = _facebook(account, token, text, urls, is_video)
+    return {"platform_post_id": post_id, "url": f"https://www.facebook.com/{post_id}", "mode": "meta"}
 
 
-def _tenant(space) -> str | None:
-    return getattr(space, "tenant_id", None)
+def _instagram(user: str, token: str, caption: str, urls: list[str], is_video: bool) -> str:
+    """Container -> wait until Instagram has processed it -> publish. Returns the media id."""
+    if is_video:
+        container = _api("instagram", "POST", f"{user}/media", token, media_type="REELS", video_url=urls[0],
+                         caption=caption, share_to_feed="true")["id"]
+    elif len(urls) == 1:
+        container = _api("instagram", "POST", f"{user}/media", token, image_url=urls[0], caption=caption)["id"]
+    else:
+        children = [_api("instagram", "POST", f"{user}/media", token, image_url=u, is_carousel_item="true")["id"]
+                    for u in urls[:10]]
+        container = _api("instagram", "POST", f"{user}/media", token, media_type="CAROUSEL",
+                         children=",".join(children), caption=caption)["id"]
+    for _ in range(120):  # Up to 10 minutes for a video.
+        status = _api("instagram", "GET", container, token, fields="status_code").get("status_code")
+        if status == "FINISHED":
+            break
+        if status in ("ERROR", "EXPIRED"):
+            raise PublishError(f"Instagram could not process the media ({status}).")
+        time.sleep(5)
+    else:
+        raise PublishError("Instagram took too long to process the media.")
+    return _api("instagram", "POST", f"{user}/media_publish", token, creation_id=container)["id"]
 
 
-def _is_login_error(text: str) -> bool:
-    return any(w in (text or "").lower() for w in LOGIN_WORDS)
+def _facebook(page: str, token: str, message: str, urls: list[str], is_video: bool) -> str:
+    """Page post: a video, one photo, or several photos in one post. Returns the post id."""
+    if is_video:
+        return _api("facebook", "POST", f"{page}/videos", token, file_url=urls[0], description=message)["id"]
+    if len(urls) == 1:
+        data = _api("facebook", "POST", f"{page}/photos", token, url=urls[0], message=message)
+        return data.get("post_id") or data["id"]
+    photos = [_api("facebook", "POST", f"{page}/photos", token, url=u, published="false")["id"] for u in urls]
+    attached = {f"attached_media[{i}]": f'{{"media_fbid":"{p}"}}' for i, p in enumerate(photos)}
+    return _api("facebook", "POST", f"{page}/feed", token, message=message, **attached)["id"]
 
 
 def _media_urls(platform: str, post: dict, space) -> list[str]:
@@ -130,7 +173,7 @@ def _media_urls(platform: str, post: dict, space) -> list[str]:
     mine = [f for f in files if f"_{tag}_" in f] or files
     if any(is_placeholder(f) for f in mine):
         raise PublishError("The media is a placeholder file. Add MACHGEN_API_KEY (images and video) and "
-                           "ELEVENLABS_API_KEY (voice), then make the draft again.", permanent=True)
+                           "FISH_API_KEY (voice), then make the draft again.", permanent=True)
     urls = []
     for rel in mine:
         path = space.root / rel
@@ -138,46 +181,52 @@ def _media_urls(platform: str, post: dict, space) -> list[str]:
             try:
                 _uploaded[str(path)] = storage.public_url(path, f"{space.tenant_id}/{rel}", space.tenant_id)
             except ServiceError as exc:
-                raise PublishError(f"Media upload failed: {exc}") from exc
+                raise PublishError(f"Media upload failed: {exc}", permanent=not storage.r2_on()) from exc
         urls.append(_uploaded[str(path)])
     return urls
 
 
 # ---------------- comments and replies ----------------
 def fetch_new_comments(platform: str, post: dict, space=None) -> list[dict]:
-    if not is_real():
+    tenant = _tenant(space)
+    if platform not in SUPPORTED:
+        return []
+    if not is_real(platform, tenant):
         return [
             {"id": f"{post['id']}-{platform}-c1", "from": "happy_customer", "text": "This looks amazing! 😍"},
             {"id": f"{post['id']}-{platform}-c2", "from": "angry_customer",
              "text": "My last order was late and cold. I want a refund."},
         ]
-    ayr_id = post.get("publish_results", {}).get(platform, {}).get("ayrshare_id")
-    if not ayr_id:
+    post_id = post.get("publish_results", {}).get(platform, {}).get("platform_post_id")
+    if not post_id:
         return []
+    _, token = _keys(platform, tenant)
     try:
-        data = request("GET", f"{AYRSHARE}/comments/{ayr_id}", service="Ayrshare",
-                       headers=_headers(_tenant(space))).json()
-    except ServiceError:
+        if platform == "instagram":
+            data = _api(platform, "GET", f"{post_id}/comments", token, fields="id,text,username")
+            return [{"id": c["id"], "from": c.get("username") or "someone", "text": c.get("text", "")}
+                    for c in data.get("data", [])]
+        data = _api(platform, "GET", f"{post_id}/comments", token, fields="id,message,from")
+        return [{"id": c["id"], "from": (c.get("from") or {}).get("name") or "someone", "text": c.get("message", "")}
+                for c in data.get("data", [])]
+    except PublishError:
         return []
-    out = []
-    for c in data.get(AYRSHARE_NAMES.get(platform, platform), []) or []:
-        who = c.get("username") or c.get("userName") or (c.get("from") or {}).get("name") or "someone"
-        out.append({"id": str(c.get("commentId") or c.get("id")), "from": who, "text": c.get("comment", "")})
-    return out
 
 
 def reply(platform: str, comment_id: str, text: str, space=None) -> None:
-    if not is_real():
+    tenant = _tenant(space)
+    if platform not in SUPPORTED or not is_real(platform, tenant):
         return
-    request("POST", f"{AYRSHARE}/comments/reply/{comment_id}", service="Ayrshare",
-            headers=_headers(_tenant(space)),
-            json={"platforms": [AYRSHARE_NAMES.get(platform, platform)], "comment": text})
+    _, token = _keys(platform, tenant)
+    edge = "replies" if platform == "instagram" else "comments"
+    _api(platform, "POST", f"{comment_id}/{edge}", token, message=text)
 
 
 # ---------------- metrics ----------------
 def get_metrics(platform: str, post: dict, checkpoint: str, space=None) -> dict:
     """Reach, views, likes, comments. Missing numbers are 0 and listed in "gaps"."""
-    if not is_real():
+    tenant = _tenant(space)
+    if platform not in SUPPORTED or not is_real(platform, tenant):
         seed = int(hashlib.md5(f"{post['id']}{platform}{checkpoint}".encode()).hexdigest(), 16)
         rng = random.Random(seed)
         scale = {"1h": 1, "24h": 6, "7d": 15}[checkpoint]
@@ -186,40 +235,41 @@ def get_metrics(platform: str, post: dict, checkpoint: str, space=None) -> dict:
         return {"reach": reach, "views": int(reach * rng.uniform(1.0, 1.6)),
                 "likes": int(reach * rng.uniform(0.03, 0.12)),
                 "comments": int(reach * rng.uniform(0.002, 0.02)), "mode": "simulated"}
-    ayr_id = post.get("publish_results", {}).get(platform, {}).get("ayrshare_id")
-    empty = {"reach": 0, "views": 0, "likes": 0, "comments": 0, "gaps": ["no post id"], "mode": "ayrshare"}
-    if not ayr_id:
+    post_id = post.get("publish_results", {}).get(platform, {}).get("platform_post_id")
+    empty = {"reach": 0, "views": 0, "likes": 0, "comments": 0, "gaps": ["no post id"], "mode": "meta"}
+    if not post_id:
         return empty
-    name = AYRSHARE_NAMES.get(platform, platform)
+    _, token = _keys(platform, tenant)
+    raw: dict = {}
     try:
-        data = request("POST", f"{AYRSHARE}/analytics/post", service="Ayrshare", headers=_headers(_tenant(space)),
-                       json={"id": ayr_id, "platforms": [name]}).json()
-    except ServiceError as exc:
+        if platform == "instagram":
+            data = _api(platform, "GET", f"{post_id}/insights", token, metric="reach,views,likes,comments")
+            raw = {m["name"]: (m.get("values") or [{}])[0].get("value") for m in data.get("data", [])}
+        else:
+            data = _api(platform, "GET", post_id, token,
+                        fields="reactions.summary(true),comments.summary(true)")
+            raw = {"likes": (data.get("reactions") or {}).get("summary", {}).get("total_count"),
+                   "comments": (data.get("comments") or {}).get("summary", {}).get("total_count")}
+            try:
+                ins = _api(platform, "GET", f"{post_id}/insights", token, metric="post_impressions_unique")
+                raw["reach"] = (ins.get("data") or [{}])[0].get("values", [{}])[0].get("value")
+            except PublishError:
+                pass
+    except PublishError as exc:
         return empty | {"gaps": [str(exc)[:200]]}
-    return normalise_metrics((data.get(name) or {}).get("analytics") or {})
-
-
-# Each platform names its numbers differently. Plan: "Analyst normalises metrics and marks gaps".
-METRIC_KEYS = {
-    "reach": ["reach", "reachCount", "impressionsUnique", "postImpressionsUnique", "uniqueImpressionsCount"],
-    "views": ["views", "viewCount", "videoViews", "plays", "impressions", "impressionCount", "impressionsCount",
-              "postImpressions", "playCount"],
-    "likes": ["likes", "likeCount", "reactions", "favoriteCount", "likesCount", "reactionCount"],
-    "comments": ["comments", "commentCount", "commentsCount", "replyCount"],
-}
+    return normalise_metrics(raw)
 
 
 def normalise_metrics(raw: dict) -> dict:
     out, gaps = {}, []
-    for field, keys in METRIC_KEYS.items():
-        value = next((raw[k] for k in keys if isinstance(raw.get(k), (int, float))), None)
-        if isinstance(raw.get(field), dict):  # e.g. Facebook reactions {"total": n}
-            value = raw[field].get("total", value)
-        if value is None:
+    for field in ("reach", "views", "likes", "comments"):
+        value = raw.get(field)
+        if not isinstance(value, (int, float)):
             gaps.append(field)
-        out[field] = int(value or 0)
+            value = 0
+        out[field] = int(value)
     if not out["reach"] and out["views"]:
         out["reach"] = out["views"]
     out["gaps"] = gaps
-    out["mode"] = "ayrshare"
+    out["mode"] = "meta"
     return out

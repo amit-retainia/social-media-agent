@@ -39,11 +39,20 @@ INTERVIEW = ["Sweet Crumbs", "bakery", "Pune", "Family bakery since 1998", "warm
              "skip", "instagram, facebook", "3", "skip"]
 
 
+KEYS = ("MACHGEN_API_KEY", "OPENAI_API_KEY", "RUNWAYML_API_SECRET", "FISH_API_KEY", "GROQ_API_KEY",
+        "INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_USER_ID", "FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_TOKEN",
+        "DISCORD_WEBHOOK_URL", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY",
+        "R2_BUCKET", "ALERT_WEBHOOK_URL", "SMTP_HOST", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.patches = [mock.patch.object(config, "DATA_DIR", self.tmp),
                         mock.patch.object(config, "PUBLISH_RETRY_WAIT", 0)]
+        # Real keys on this computer must never reach a test: each test sets the fake keys it needs.
+        for key in KEYS:
+            self.patches.append(mock.patch.object(config, key, ""))
         for p in self.patches:
             p.start()
 

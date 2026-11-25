@@ -16,19 +16,24 @@ brand brief, connected accounts, content calendar, content plan, media library, 
 Every outside service switches on when its key is in `.env`.
 When a key is missing, that service is simulated, so the app still runs end to end.
 
+**Grok Bot:** see [GROK.md](GROK.md) (setup, keys, routine, skill).
+
 ## Keys you need
 
 | Service | What it does | Key in `.env` | Where to get it |
 |---|---|---|---|
 | Claude (Anthropic) | Text for all agents. Planner trends with web search. | `ANTHROPIC_API_KEY` | https://console.anthropic.com |
-| **MachGen** | Creator makes images (FLUX.2-dev) **and** video clips (Wan2.2-A14B). One key for both. | `MACHGEN_API_KEY` | https://www.machgen.ai -> Profile -> API Keys |
-| ElevenLabs | Creator makes the voiceover (its timestamps time the captions and scene cuts) | `ELEVENLABS_API_KEY` (+ `ELEVENLABS_VOICE_ID`) | https://elevenlabs.io |
+| **MachGen** | Creator makes images (Nano-Banana-2) **and** video clips (Vidu-Q3-Turbo). One key for both. | `MACHGEN_API_KEY` | https://www.machgen.ai -> Profile -> API Keys |
+| Fish Audio | Creator makes the voiceover (model s2.1-pro-free, no cost) | `FISH_API_KEY` (+ `FISH_VOICE_ID`) | https://fish.audio |
+| Groq (free tier) | Whisper word times for the captions and scene cuts. Without it, times are estimated | `GROQ_API_KEY` | https://console.groq.com/keys |
 | OpenAI images (optional) | Other image option (gpt-image-2), used only with no MachGen key or `IMAGE_PROVIDER=openai` | `OPENAI_API_KEY` | https://platform.openai.com/api-keys |
 | Runway (optional) | Other video option (gen4.5), used only with no MachGen key or `VIDEO_PROVIDER=runway` | `RUNWAYML_API_SECRET` | https://dev.runwayml.com |
-| Ayrshare | Connect accounts, post, comments and replies, metrics, on Instagram, Facebook, X, LinkedIn, TikTok and YouTube | `AYRSHARE_API_KEY` (+ optional `AYRSHARE_PROFILE_KEY`) | https://app.ayrshare.com |
-| Amazon S3 (optional) | Public links for media. Without it, media goes to Ayrshare storage. | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET` (+ optional `S3_PUBLIC_BASE_URL`) | AWS console |
-| **Telegram bot** (Owner app on your phone) | Step 4: each draft comes to your phone with **Approve** / **Ask for changes** buttons. Alerts come here too. Without it, you review in the terminal. | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram -> @BotFather -> /newbot (free) |
-| Webhook alerts (optional) | Alerts to Slack, Discord or Teams | `ALERT_WEBHOOK_URL` | Your chat app's "incoming webhook" |
+| Instagram | Post, comments and replies, metrics (Meta Graph API) | `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_USER_ID` | Meta app with "Instagram API with Instagram Login" |
+| Facebook Page | Post, comments and replies, metrics (Meta Graph API) | `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_TOKEN` | Meta app, Page access token |
+| Discord | Draft previews and alerts (owners approve in the Grok Bot chat) | `DISCORD_WEBHOOK_URL` | Discord channel -> Integrations -> Webhooks |
+| Cloudflare R2 (needed to post) | Public links for media: Instagram and Facebook download from them. | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` (+ optional `R2_PUBLIC_BASE_URL`) | Cloudflare dashboard -> R2 |
+| Telegram bot (optional, normal computer only) | Step 4: each draft comes to your phone with **Approve** / **Ask for changes** buttons. Alerts come here too. Without it, you review in the terminal. | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram -> @BotFather -> /newbot (free) |
+| Webhook alerts (optional) | Alerts to Slack or Teams | `ALERT_WEBHOOK_URL` | Your chat app's "incoming webhook" |
 | Email alerts (optional) | Alerts by email | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO` | Your email provider |
 | Video editing, captions, sizes | Joins clips, burns in captions, adds the voiceover, sizes every file per platform | no key (ffmpeg from `imageio-ffmpeg`, Pillow) | - |
 | Website reader | Interviewer reads your website | no key | - |
@@ -40,11 +45,10 @@ python main.py --check
 ```
 
 Notes:
-- **Ayrshare:** link each social account once in the Ayrshare dashboard (Social Accounts).
-  Ayrshare keeps the logins (OAuth tokens), so no tokens are saved in this project.
-  For many businesses, use one Ayrshare profile per business:
-  `AYRSHARE_PROFILE_KEY_<BUSINESS>` (capitals, `-` becomes `_`), e.g. `AYRSHARE_PROFILE_KEY_SWEET_CRUMBS`.
-- **MachGen** is the default for images and video. With only `MACHGEN_API_KEY` and `ELEVENLABS_API_KEY`
+- **Instagram and Facebook** only (X, LinkedIn, TikTok, YouTube are not supported yet).
+  For many businesses, add `_<BUSINESS>` to each Meta key (capitals, `-` becomes `_`),
+  e.g. `INSTAGRAM_USER_ID_SWEET_CRUMBS`.
+- **MachGen** is the default for images and video. With only `MACHGEN_API_KEY`, `FISH_API_KEY` and `GROQ_API_KEY`
   the Creator makes real, postable photos, carousels, reels and videos.
   Change models with `MACHGEN_IMAGE_MODEL` / `MACHGEN_VIDEO_MODEL` (list: https://www.machgen.ai/docs/models).
   The app reads each model's allowed sizes and lengths from MachGen, so any listed model works.
@@ -60,7 +64,7 @@ Notes:
 | Manager | Chats with you, routes work to each agent, updates the brand brief |
 | 1. Interviewer | Asks questions, reads your website, checks linked accounts, writes the brand brief (with time zone and closed days) |
 | 2. Planner | Weekly content calendar and news posts. Picks topics, formats (post, carousel, reel, video), days and times. Writes a script per post. Uses trends and the Analyst's learnings. Saves `content_plan.json` |
-| 3. Creator | Final copy, images (MachGen), video clips (MachGen), voiceover (ElevenLabs), edit with captions (ffmpeg), sizes per platform (9:16, 1:1, 16:9), text per platform |
+| 3. Creator | Final copy, images (MachGen), video clips (MachGen), voiceover (Fish Audio), edit with captions (ffmpeg), sizes per platform (9:16, 1:1, 16:9), text per platform |
 | 4. Owner approval | Preview on your phone (Telegram) or in the terminal; approve, or ask for changes with a short note; the Creator fixes and sends it again; reminders for slow approvals |
 | 5. Publisher | Posts at the set time, 3 retries, alerts, new time from the Planner, replies to comments |
 | 6. Analyst | Metrics at 1 h, 24 h, 7 days; finds what works; learnings go to the Planner |
@@ -100,8 +104,8 @@ It follows the plan's steps for every planned post (and every post you asked to 
    the AI image model (MachGen). Your own photos come first: put them in
    `data/businesses/<business>/media_library/<post id>/owner/` and the Creator uses them (no AI cost).
 4. **Video (reel, video):** one scene per shot of the script.
-   - Voiceover: ElevenLabs reads the whole script once. Its timestamps set when each scene starts and ends.
-   - Clips: MachGen makes one clip per scene (text to video, or `VIDEO_MODE=image`: image first, then animate).
+   - Voiceover: Fish Audio reads the whole script once. Whisper on Groq times each word; the times set when each scene starts and ends.
+   - Clips: MachGen draws a start image per scene (Nano-Banana-2), then animates it (Vidu-Q3-Turbo). `VIDEO_MODE=text` = text to video.
    - Edit: ffmpeg trims or holds each clip to its voice line, joins them and adds the voiceover.
 5. **Captions and sizes:** short caption lines (a few words, timed to the voice) are burned in, and a `.srt`
    file is saved. Every file is made in the exact size for each platform:
@@ -233,6 +237,8 @@ python main.py --publish              # Publisher only: post what is due, then s
 python main.py --check                # which services are real or simulated
 python main.py --bot                  # always on: phone approvals, reminders, Publisher on time
 python main.py --telegram-setup       # check the Telegram bot and find your chat ID
+python main.py --once                 # one --bot round, then exit (Grok Bot routine or cron)
+python main.py --business sweet-crumbs --tool plan_week --args '{"week": "next"}'   # one team step, JSON out
 ```
 
 Run `python main.py --bot` (see Owner approval), or run `python main.py --publish --business sweet-crumbs`
@@ -258,7 +264,7 @@ python -m unittest -v
 ```
 
 The tests need no keys. They check the full loop, the Planner, the Creator, and every real integration
-against a fake server (MachGen, OpenAI, Runway, ElevenLabs, Ayrshare, Telegram, webhook, web search),
+against a fake server (MachGen, OpenAI, Runway, Fish Audio, Groq, Instagram, Facebook, Discord, Telegram, webhook, web search),
 plus real ffmpeg edits with captions and exact sizes per platform.
 
 ## Settings (in .env)
@@ -267,16 +273,16 @@ plus real ffmpeg edits with captions and exact sizes per platform.
 |---|---|---|
 | `CLAUDE_MODEL` | `claude-sonnet-5-5` | The Claude model |
 | `TRENDS_WEB_SEARCH` | `1` | Planner searches the web for trends |
-| `MACHGEN_IMAGE_MODEL` | `FLUX.2-dev` | MachGen image model |
-| `MACHGEN_VIDEO_MODEL` | `Wan2.2-A14B` | MachGen video model |
-| `MACHGEN_VIDEO_HEIGHT` | `720` | Video height (nearest allowed height is used) |
+| `MACHGEN_IMAGE_MODEL` | `Nano-Banana-2` | MachGen image model |
+| `MACHGEN_VIDEO_MODEL` | `Vidu-Q3-Turbo` | MachGen video model |
+| `MACHGEN_VIDEO_HEIGHT` | `540` | Video height (nearest allowed height is used) |
 | `IMAGE_PROVIDER` / `VIDEO_PROVIDER` | `auto` | `auto` = MachGen if its key is set. Or `openai` / `runway` |
-| `VIDEO_MODE` | `text` | `text` = text to video. `image` = AI image first, then animate it |
+| `VIDEO_MODE` | `image` | `image` = AI image first, then animate it. `text` = text to video |
 | `AI_VIDEO_ENABLED` | `1` | `0` = no AI video clips |
 | `SLIDESHOW_FALLBACK` | `1` | No AI video: make reels from AI images with a slow zoom |
 | `BURN_IN_CAPTIONS` | `1` | Burn captions into videos (`.srt` is always saved) |
 | `CAPTION_FONT` | empty | Path to a `.ttf` brand font for captions |
-| `ELEVENLABS_VOICE_ID` | Rachel | The voice for voiceovers |
+| `FISH_VOICE_ID` | COLD CASE narrator | Fish voice `reference_id` for voiceovers |
 | `OPENAI_IMAGE_QUALITY` | `medium` | OpenAI image quality (only if you use OpenAI) |
 | `RUNWAY_VIDEO_MODEL` | `gen4.5` | Runway model (only if you use Runway) |
 | `APPROVAL_WAIT_SECONDS` | `300` | How long the chat waits for your answers on the phone |
@@ -308,11 +314,12 @@ social_agent/
   tools/
     website.py              reads the business website
     trends.py               trends: Claude web search (or a fixed list)
-    ai_models.py            provider layer: images, video clips, voice (picks MachGen / OpenAI / Runway / ElevenLabs)
+    ai_models.py            provider layer: images, video clips, voice (picks MachGen / OpenAI / Runway / Fish Audio + Groq)
     machgen.py              MachGen REST API: images and video clips
     media_edit.py           sizes per platform, captions, video edit (Pillow + ffmpeg)
-    platforms.py            social platforms through Ayrshare (or simulated)
-    storage.py              media links: S3 or Ayrshare storage
+    platforms.py            Instagram and Facebook through Meta's Graph API (or simulated)
+    storage.py              media links: Cloudflare R2
+    discord.py              draft previews and alerts to a Discord channel
     telegram.py             Telegram Bot API: previews, buttons, replies (the Owner app on the phone)
     notify.py               owner alerts: Telegram, webhook and email
     http.py                 shared HTTP helper
@@ -323,14 +330,14 @@ tests/                      test_flow.py, test_planner.py, test_creator.py, test
 
 - Owner app (web and mobile) with the same approve / change buttons. The phone works today through Telegram.
 - Postgres, a vector store and a job queue instead of JSON files and cron.
-- Direct platform APIs instead of Ayrshare, if you need them later.
+- X, LinkedIn, TikTok and YouTube.
 
 ## Problems?
 
 - `ModuleNotFoundError`: turn on the venv (step 3), then do step 4 again.
 - `AuthenticationError`: your Anthropic key in `.env` is wrong.
 - `model not found`: set `CLAUDE_MODEL` in `.env` to a model your account can use.
-- An account shows `needs_login`: link it in the Ayrshare dashboard, then say `connect my accounts again`.
+- An account shows `needs_login`: its Meta token is wrong or expired. Make a new one, then say `connect my accounts again`.
 - Telegram: no preview on the phone -> run `python main.py --telegram-setup`. Check `TELEGRAM_CHAT_ID`.
   `Conflict: terminated by other getUpdates request` -> only run one `--bot` per bot token.
   A video bigger than 50 MB is not shown on the phone; the text and buttons still come.

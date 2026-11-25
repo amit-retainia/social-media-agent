@@ -16,7 +16,7 @@ from .. import config, llm
 from ..business_space import BusinessSpace, now_utc, parse_time
 from ..tools import platforms
 
-SYSTEM = """You are the Analyst in a social media team for one small business.
+SYSTEM = """You are the Analyst in a social media team for one business.
 Look at the post metrics and write 3-5 short, practical learnings for the Planner.
 Compare topic, format, posting time and platform. Use engagement rate
 ((likes + comments) / reach). Say when data is too small to be sure."""

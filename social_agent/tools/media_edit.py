@@ -3,7 +3,7 @@
   Images  -> Pillow: crop and resize to the exact platform size (JPEG).
   Video   -> ffmpeg (bundled by imageio-ffmpeg): trim or hold each clip to its voiceover line,
              size it for the platform, join, burn in captions, add the voiceover.
-  Captions-> .srt file, timed by the voiceover (ElevenLabs timestamps) or by an estimate.
+  Captions-> .srt file, timed by the voiceover (word times from Groq Whisper) or by an estimate.
 """
 import re
 import subprocess
@@ -104,7 +104,7 @@ def still_clip(image: Path, seconds: float, aspect: str, out_path: Path, zoom: b
 def timeline(scenes: list[dict], alignment: dict | None = None, voice_length: float = 0.0) -> list[dict]:
     """Start, end and timed words for each scene.
 
-    With ElevenLabs alignment, times come from the real voice. Else they are estimated.
+    With an alignment (ai_models.voiceover_with_timing), times come from the real voice. Else they are estimated.
     The voiceover text is the scene lines joined with one space (same as the Creator sends to TTS).
     """
     if alignment and alignment.get("characters"):
