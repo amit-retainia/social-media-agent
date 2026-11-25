@@ -1,11 +1,13 @@
-"""Social platforms: Instagram and Facebook, straight through Meta's Graph API (no paid aggregator).
+"""Social platforms, each through its own API (no paid aggregator).
 
   Instagram  Instagram API with Instagram Login (graph.instagram.com), a professional (business or creator)
              account. Keys: INSTAGRAM_ACCESS_TOKEN, INSTAGRAM_USER_ID.
   Facebook   a Facebook Page (graph.facebook.com). Keys: FACEBOOK_PAGE_ID, FACEBOOK_PAGE_TOKEN.
+             Meta downloads the media from a link, so Instagram and Facebook need Cloudflare R2 (storage.py).
+  X          x_api.py. Keys: X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET.
+  LinkedIn   linkedin.py, a personal profile or a company page. Keys: LINKEDIN_ACCESS_TOKEN, LINKEDIN_AUTHOR_URN.
   Many businesses: add _<BUSINESS> to each key name (capitals, "-" becomes "_"), e.g. INSTAGRAM_USER_ID_SWEET_CRUMBS.
-  Meta downloads the media from a link, so posting needs Cloudflare R2 (storage.py).
-  X, LinkedIn, TikTok and YouTube: not supported yet.
+  TikTok and YouTube: not supported yet.
 Simulated: when a platform's keys are missing. Nothing is posted.
 
 Functions: connect_account, publish, fetch_new_comments, reply, get_metrics.
@@ -18,12 +20,13 @@ import time
 
 from .. import config
 from ..business_space import now_utc
-from . import storage
+from . import linkedin, storage, x_api
 from .ai_models import is_placeholder, size_for
 from .http import ServiceError, request
 
 PLATFORMS = ["instagram", "facebook", "x", "linkedin", "tiktok", "youtube"]
-SUPPORTED = ("instagram", "facebook")
+SUPPORTED = ("instagram", "facebook", "x", "linkedin")
+OTHER_APIS = {"x": x_api, "linkedin": linkedin}  # Each has NAMES, connect, publish, metrics (+ comments, reply)
 INSTAGRAM = "https://graph.instagram.com/v23.0"
 FACEBOOK = "https://graph.facebook.com/v23.0"
 LOGIN_WORDS = ("token", "expired", "session", "oauth", "permission")
@@ -58,8 +61,25 @@ def _keys(platform: str, tenant_id: str | None) -> tuple[str, str]:
     return "", ""
 
 
+def _creds(platform: str, tenant_id: str | None) -> dict:
+    """The keys of an X or LinkedIn account for this business."""
+    return {n: config.for_business(n, tenant_id) for n in OTHER_APIS[platform].NAMES}
+
+
 def is_real(platform: str = "instagram", tenant_id: str | None = None) -> bool:
+    if platform in OTHER_APIS:
+        return all(_creds(platform, tenant_id).values())
     return all(_keys(platform, tenant_id))
+
+
+def _other(platform: str, tenant_id: str | None, fn: str, *args):
+    """Call an X or LinkedIn function; its errors become PublishError."""
+    try:
+        return getattr(OTHER_APIS[platform], fn)(_creds(platform, tenant_id), *args)
+    except ServiceError as exc:
+        raise PublishError(str(exc), login_expired=_is_login_error(exc.body)) from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PublishError(f"{platform}: unexpected answer ({exc})") from exc
 
 
 def _api(platform: str, method: str, path: str, token: str, **params) -> dict:
@@ -85,6 +105,13 @@ def connect_account(platform: str, tenant_id: str | None = None) -> dict:
         return {"status": "not_supported", "message": f"{platform} is not supported yet. Use instagram or facebook."}
     if not is_real(platform, tenant_id):
         return {"status": "connected", "mode": "simulated", "connected_at": now_utc().isoformat()}
+    if platform in OTHER_APIS:
+        try:
+            info = _other(platform, tenant_id, "connect")
+        except PublishError as exc:
+            return {"status": "needs_login", "mode": platform,
+                    "message": f"The {platform} keys do not work ({str(exc)[:150]}). Make new ones and put them in .env."}
+        return {"status": "connected", "mode": platform, **info, "connected_at": now_utc().isoformat()}
     account, token = _keys(platform, tenant_id)
     try:
         if platform == "instagram":
@@ -117,11 +144,14 @@ def publish(platform: str, post: dict, space=None) -> dict:
         tags = " ".join(draft.get("hashtags", []))
         if tags and tags not in text:
             text += "\n\n" + tags
+    is_video = post["format"] in ("reel", "video")
+    if platform in OTHER_APIS:  # X and LinkedIn take the files from the disk.
+        files = _media_files(platform, post, space) if space is not None else []
+        return _other(platform, tenant, "publish", text, files, is_video) | {"mode": platform}
     urls = _media_urls(platform, post, space) if space is not None else []
     if not urls:
         raise PublishError(f"{platform} post needs an image or video, and this post has none.", permanent=True)
     account, token = _keys(platform, tenant)
-    is_video = post["format"] in ("reel", "video")
     if platform == "instagram":
         media_id = _instagram(account, token, text, urls, is_video)
         link = _api(platform, "GET", media_id, token, fields="permalink").get("permalink")
@@ -166,17 +196,22 @@ def _facebook(page: str, token: str, message: str, urls: list[str], is_video: bo
     return _api("facebook", "POST", f"{page}/feed", token, message=message, **attached)["id"]
 
 
-def _media_urls(platform: str, post: dict, space) -> list[str]:
-    """Pick the media files sized for this platform and upload them."""
+def _media_files(platform: str, post: dict, space) -> list:
+    """The media files sized for this platform (local paths)."""
     files = post.get("draft", {}).get("files", [])
     tag = size_for(platform, post["format"]).replace(":", "x")
     mine = [f for f in files if f"_{tag}_" in f] or files
     if any(is_placeholder(f) for f in mine):
         raise PublishError("The media is a placeholder file. Add MACHGEN_API_KEY (images and video) and "
                            "FISH_API_KEY (voice), then make the draft again.", permanent=True)
+    return [space.root / rel for rel in mine]
+
+
+def _media_urls(platform: str, post: dict, space) -> list[str]:
+    """Pick the media files sized for this platform and upload them (Instagram and Facebook)."""
     urls = []
-    for rel in mine:
-        path = space.root / rel
+    for path in _media_files(platform, post, space):
+        rel = path.relative_to(space.root).as_posix()
         if str(path) not in _uploaded:
             try:
                 _uploaded[str(path)] = storage.public_url(path, f"{space.tenant_id}/{rel}", space.tenant_id)
@@ -198,10 +233,12 @@ def fetch_new_comments(platform: str, post: dict, space=None) -> list[dict]:
              "text": "My last order was late and cold. I want a refund."},
         ]
     post_id = post.get("publish_results", {}).get(platform, {}).get("platform_post_id")
-    if not post_id:
+    if not post_id or platform == "x":  # Reading X replies needs X's search API (higher paid tiers).
         return []
     _, token = _keys(platform, tenant)
     try:
+        if platform == "linkedin":
+            return _other(platform, tenant, "comments", post_id)
         if platform == "instagram":
             data = _api(platform, "GET", f"{post_id}/comments", token, fields="id,text,username")
             return [{"id": c["id"], "from": c.get("username") or "someone", "text": c.get("text", "")}
@@ -215,7 +252,10 @@ def fetch_new_comments(platform: str, post: dict, space=None) -> list[dict]:
 
 def reply(platform: str, comment_id: str, text: str, space=None) -> None:
     tenant = _tenant(space)
-    if platform not in SUPPORTED or not is_real(platform, tenant):
+    if platform not in SUPPORTED or platform == "x" or not is_real(platform, tenant):
+        return
+    if platform == "linkedin":
+        _other(platform, tenant, "reply", comment_id, text)
         return
     _, token = _keys(platform, tenant)
     edge = "replies" if platform == "instagram" else "comments"
@@ -242,7 +282,9 @@ def get_metrics(platform: str, post: dict, checkpoint: str, space=None) -> dict:
     _, token = _keys(platform, tenant)
     raw: dict = {}
     try:
-        if platform == "instagram":
+        if platform in OTHER_APIS:
+            raw = _other(platform, tenant, "metrics", post_id)
+        elif platform == "instagram":
             data = _api(platform, "GET", f"{post_id}/insights", token, metric="reach,views,likes,comments")
             raw = {m["name"]: (m.get("values") or [{}])[0].get("value") for m in data.get("data", [])}
         else:

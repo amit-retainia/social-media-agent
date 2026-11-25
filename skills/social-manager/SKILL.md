@@ -28,7 +28,7 @@ When a step answers `"status": "needs_text"`, it gives you `do`, `rules`, `shape
 | `show_business_space` | `{"section": "summary"}` (or `brand_brief`, `content_calendar`, `content_plan`, `learnings`) | Read what the team knows |
 | `brief_questions` | `{}` | The interview questions and the brand brief fields |
 | `update_brand_brief` | `{"changes": {...}}` | Save or change the brand brief |
-| `connect_accounts` | `{"platforms": ["instagram", "facebook"]}` | Check the Instagram and Facebook keys |
+| `connect_accounts` | `{"platforms": ["instagram", "facebook", "x", "linkedin"]}` (only the ones the owner uses) | Check each platform's keys |
 | `plan_week` | `{"week": "next"}` (or `"this"`), optional `"task"`; then + `"posts"` | Weekly plan, a script per post |
 | `plan_posts` | `{"task": "<owner news, their words>", "number_of_posts": 1}`, optional `"preferred_day"`; then + `"posts"` | Post(s) about news on the next good day |
 | `show_plan` | `{}` | The plan by day |

@@ -32,6 +32,8 @@ When a key is missing, that service is simulated, so the app still runs end to e
 | Runway (optional) | Other video option (gen4.5), used only with no MachGen key or `VIDEO_PROVIDER=runway` | `RUNWAYML_API_SECRET` | https://dev.runwayml.com |
 | Instagram | Post, comments and replies, metrics (Meta Graph API) | `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_USER_ID` | Meta app with "Instagram API with Instagram Login" |
 | Facebook Page | Post, comments and replies, metrics (Meta Graph API) | `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_TOKEN` | Meta app, Page access token |
+| X (Twitter) | Post, metrics (X API v2; replies are not read) | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET` | developer.x.com (paid API) |
+| LinkedIn | Post, comments and replies, likes (Posts API), profile or company page | `LINKEDIN_ACCESS_TOKEN`, `LINKEDIN_AUTHOR_URN` | LinkedIn developer app |
 | Discord | Draft previews and alerts (owners approve in the Grok Bot chat) | `DISCORD_WEBHOOK_URL` | Discord channel -> Integrations -> Webhooks |
 | Cloudflare R2 (needed to post) | Public links for media: Instagram and Facebook download from them. | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` (+ optional `R2_PUBLIC_BASE_URL`) | Cloudflare dashboard -> R2 |
 | Telegram bot (optional, normal computer only) | Step 4: each draft comes to your phone with **Approve** / **Ask for changes** buttons. Alerts come here too. Without it, you review in the terminal. | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram -> @BotFather -> /newbot (free) |
@@ -47,7 +49,7 @@ python main.py --check
 ```
 
 Notes:
-- **Instagram and Facebook** only (X, LinkedIn, TikTok, YouTube are not supported yet).
+- **Instagram, Facebook, X and LinkedIn** (TikTok and YouTube are not supported yet).
   For many businesses, add `_<BUSINESS>` to each Meta key (capitals, `-` becomes `_`),
   e.g. `INSTAGRAM_USER_ID_SWEET_CRUMBS`.
 - **MachGen** is the default for images and video. With only `MACHGEN_API_KEY`, `FISH_API_KEY` and `GROQ_API_KEY`
@@ -308,7 +310,9 @@ social_agent/
     ai_models.py            provider layer: images, video clips, voice (picks MachGen / OpenAI / Runway / Fish Audio + Groq)
     machgen.py              MachGen REST API: images and video clips
     media_edit.py           sizes per platform, captions, video edit (Pillow + ffmpeg)
-    platforms.py            Instagram and Facebook through Meta's Graph API (or simulated)
+    platforms.py            every platform: Instagram and Facebook (Meta Graph API) here, X and LinkedIn below
+    x_api.py                X API v2: posts, media upload, metrics
+    linkedin.py             LinkedIn Posts API: posts, image and video upload, comments, likes
     storage.py              media links: Cloudflare R2
     discord.py              draft previews and alerts to a Discord channel
     telegram.py             Telegram Bot API: previews, buttons, replies (the Owner app on the phone)
@@ -321,7 +325,7 @@ tests/                      test_flow.py, test_planner.py, test_creator.py, test
 
 - Owner app (web and mobile) with the same approve / change buttons. The phone works today through Telegram.
 - Postgres, a vector store and a job queue instead of JSON files and cron.
-- X, LinkedIn, TikTok and YouTube.
+- TikTok and YouTube.
 
 ## Problems?
 

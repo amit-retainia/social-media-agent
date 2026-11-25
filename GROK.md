@@ -14,7 +14,7 @@ Owner ── chat ──▶ Grok Bot "Social Manager" (skill: skills/social-mana
           Owner says "approve" or what to change, in the chat ─▶ approve_draft / request_changes
                       │
 Routine every 15 min: main.py --once
-    reminders for drafts not approved ─▶ posts what is due (Instagram, Facebook) ─▶ replies to comments
+    reminders for drafts not approved ─▶ posts what is due (Instagram, Facebook, X, LinkedIn) ─▶ replies to comments
 ```
 Files: `data/businesses/<business>/` (brand brief, calendar, plan, media library). `/workspace` keeps them.
 Posting: the media goes to Cloudflare R2; Instagram and Facebook download it from a link.
@@ -44,16 +44,19 @@ After a computer update the Python environment is gone: run `bash setup.sh` agai
 | `DISCORD_WEBHOOK_URL` | draft previews and alerts | Discord channel, Edit, Integrations, Webhooks |
 | `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_USER_ID` | post to Instagram, replies, numbers | Meta app with "Instagram API with Instagram Login" (same as CB Reels) |
 | `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_TOKEN` | post to a Facebook Page | Meta app, a Page access token (Graph API Explorer) |
+| `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET` | post to X, numbers (X replies are not read) | developer.x.com, your app, Keys and tokens ("Read and write"). X's API is paid: check the price |
+| `LINKEDIN_ACCESS_TOKEN`, `LINKEDIN_AUTHOR_URN` | post to LinkedIn, replies, likes and comments | LinkedIn developer app. Profile: product "Share on LinkedIn", URN `urn:li:person:<id>`. Company page: product "Community Management API" (LinkedIn must approve it), URN `urn:li:organization:<id>`. Token lasts 60 days |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | media links for Instagram and Facebook | Cloudflare, R2, a private bucket + API token |
 | `TIMEZONE` (optional) | default posting time zone, e.g. `Asia/Kolkata` | |
 | `FISH_VOICE_ID` (optional) | narrator voice (Fish `reference_id`) | default: COLD CASE |
 
 A missing key = that service is simulated. Simulated files are never posted.
-Only Instagram and Facebook are supported. X, LinkedIn, TikTok and YouTube are not.
+Supported: Instagram, Facebook, X and LinkedIn. TikTok and YouTube are not. Add only the keys of the platforms you use.
 
 ## More businesses
 One `--business` name each. Give each business its own Meta keys by adding `_<NAME>`:
-`INSTAGRAM_ACCESS_TOKEN_SWEET_CRUMBS`, `INSTAGRAM_USER_ID_SWEET_CRUMBS`, `FACEBOOK_PAGE_ID_SWEET_CRUMBS`, `FACEBOOK_PAGE_TOKEN_SWEET_CRUMBS`.
+`INSTAGRAM_ACCESS_TOKEN_SWEET_CRUMBS`, `FACEBOOK_PAGE_ID_SWEET_CRUMBS`, `X_ACCESS_TOKEN_SWEET_CRUMBS`,
+`LINKEDIN_AUTHOR_URN_SWEET_CRUMBS`, and so on for every key of every platform.
 
 ## Notes
 - Instagram tokens from Instagram Login last 60 days. Renew them before they end, or posting stops

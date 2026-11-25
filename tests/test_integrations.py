@@ -27,7 +27,9 @@ class FakeHTTP:
                 if isinstance(body, bytes):
                     return SimpleNamespace(status_code=200, content=body, text="", json=lambda: {})
                 status = body.pop("_status", 200) if isinstance(body, dict) else 200
-                return SimpleNamespace(status_code=status, content=b"", text=str(body), json=lambda b=body: b)
+                headers = body.pop("_headers", {}) if isinstance(body, dict) else {}
+                return SimpleNamespace(status_code=status, content=b"", text=str(body), json=lambda b=body: b,
+                                       headers=headers)
         raise AssertionError(f"Unexpected request {method} {url}")
 
 
@@ -171,7 +173,7 @@ class MetaTest(Base):
         with patch:
             self.assertEqual(platforms.connect_account("instagram")["account"], "sweetcrumbs")
             self.assertEqual(platforms.connect_account("facebook")["status"], "needs_login")
-            self.assertEqual(platforms.connect_account("x")["status"], "not_supported")
+            self.assertEqual(platforms.connect_account("tiktok")["status"], "not_supported")
 
     def test_instagram_reel_comments_reply_metrics(self):
         from social_agent.tools import platforms
@@ -234,7 +236,7 @@ class MetaTest(Base):
             platforms.publish("instagram", post, space)
         self.assertTrue(err.exception.login_expired)
         with self.assertRaises(platforms.PublishError) as err:
-            platforms.publish("linkedin", post, space)  # Not supported yet: no retry.
+            platforms.publish("tiktok", post, space)  # Not supported yet: no retry.
         self.assertTrue(err.exception.permanent)
         # A placeholder image cannot be posted: no retry.
         post["draft"]["files"] = ["media_library/p1/v1_1x1_image1.svg"]
@@ -247,6 +249,95 @@ class MetaTest(Base):
         with mock.patch.dict("os.environ", {"INSTAGRAM_USER_ID_SWEET_CRUMBS": "own-user"}):
             self.assertEqual(platforms._keys("instagram", "sweet-crumbs"), ("own-user", "ig-tok"))
             self.assertEqual(platforms._keys("instagram", "other"), ("ig-user", "ig-tok"))
+
+
+class XAndLinkedInTest(Base):
+    """X (API v2, media from the disk) and LinkedIn (Posts API, media uploaded to LinkedIn)."""
+
+    def setUp(self):
+        super().setUp()
+        for name, value in [("X_API_KEY", "xk"), ("X_API_SECRET", "xs"), ("X_ACCESS_TOKEN", "xt"),
+                            ("X_ACCESS_SECRET", "xa"), ("LINKEDIN_ACCESS_TOKEN", "li-tok"),
+                            ("LINKEDIN_AUTHOR_URN", "urn:li:organization:42")]:
+            self.patches.append(mock.patch.object(config, name, value))
+            self.patches[-1].start()
+        self.patches.append(mock.patch("social_agent.tools.x_api._auth", lambda creds: None))
+        self.patches[-1].start()
+
+    def post(self, fmt, names, platforms):
+        from social_agent.business_space import BusinessSpace
+        space = BusinessSpace("xli")
+        post = space.add_posts([{"topic": "New cake", "format": fmt, "platforms": platforms,
+                                 "scheduled_at": "2020-01-01T10:00:00+00:00", "script": {}}])[0]
+        files = []
+        for n in names:
+            f = space.media_folder(post["id"]) / n
+            f.write_bytes(b"media-bytes")
+            files.append(str(f.relative_to(space.root)))
+        post["draft"] = {"final_copy": "Our new cake (fresh)!", "hashtags": ["#cake"], "files": files}
+        return space, post
+
+    def test_x_photo_video_metrics(self):
+        from social_agent.tools import platforms
+        fake, patch = http([
+            ("GET", "/2/users/me", {"data": {"username": "sweetcrumbs"}}),
+            ("POST", "/2/media/upload/initialize", {"data": {"id": "v1"}}),
+            ("POST", "/2/media/upload/v1/append", {}),
+            ("POST", "/2/media/upload/v1/finalize", {"data": {"processing_info": {"state": "succeeded"}}}),
+            ("POST", "/2/media/upload", {"data": {"id": "img1"}}),
+            ("POST", "/2/tweets", {"data": {"id": "t1"}}),
+            ("GET", "/2/tweets/t1", {"data": {"public_metrics": {"impression_count": 500, "like_count": 9,
+                                                                 "reply_count": 2}}}),
+        ])
+        with patch:
+            self.assertEqual(platforms.connect_account("x")["account"], "sweetcrumbs")
+            space, post = self.post("post", ["v1_16x9_image1.jpg"], ["x"])
+            res = platforms.publish("x", post, space)
+            body = next(c for c in fake.calls if c.url.endswith("/2/tweets")).json
+            self.assertEqual(body["media"], {"media_ids": ["img1"]})
+            self.assertIn("#cake", body["text"])
+            self.assertEqual(res["url"], "https://x.com/i/status/t1")
+            space, post = self.post("video", ["v1_16x9_final.mp4"], ["x"])
+            platforms.publish("x", post, space)
+            self.assertTrue(any(c.url.endswith("/v1/finalize") for c in fake.calls))
+            post["publish_results"] = {"x": res}
+            m = platforms.get_metrics("x", post, "24h", space)
+            self.assertEqual(platforms.fetch_new_comments("x", post, space), [])  # Not read on X.
+        self.assertEqual((m["reach"], m["likes"], m["comments"]), (500, 9, 2))
+
+    def test_linkedin_images_comments_reply_metrics(self):
+        from social_agent.tools import platforms
+        images = iter(range(10))
+        fake, patch = http([
+            ("POST", "rest/images", lambda kw: {"value": {"uploadUrl": "https://upload.li/x",
+                                                          "image": f"urn:li:image:{next(images)}"}}),
+            ("PUT", "upload.li", {}),
+            ("POST", "rest/posts", {"_status": 201, "_headers": {"x-restli-id": "urn:li:share:9"}}),
+            ("GET", "/comments", {"elements": [{"$URN": "urn:li:comment:(urn:li:share:9,5)",
+                                                "actor": "urn:li:person:a", "message": {"text": "Nice!"}}]}),
+            ("POST", "/comments", {}),
+            ("GET", "rest/socialActions/", {"likesSummary": {"totalLikes": 7},
+                                            "commentsSummary": {"aggregatedTotalComments": 1}}),
+        ])
+        space, post = self.post("carousel", ["v1_1x1_image1.jpg", "v1_1x1_image2.jpg"], ["linkedin"])
+        with patch:
+            res = platforms.publish("linkedin", post, space)
+            body = next(c for c in fake.calls if c.url.endswith("rest/posts")).json
+            self.assertEqual(body["author"], "urn:li:organization:42")
+            self.assertEqual(len(body["content"]["multiImage"]["images"]), 2)
+            self.assertIn("\\(fresh\\)", body["commentary"])  # LinkedIn's reserved characters are escaped.
+            self.assertIn("#cake", body["commentary"])
+            self.assertEqual(res["platform_post_id"], "urn:li:share:9")
+            self.assertEqual(fake.calls[0].headers["LinkedIn-Version"], "202510")
+            post["publish_results"] = {"linkedin": res}
+            comments = platforms.fetch_new_comments("linkedin", post, space)
+            self.assertEqual(comments[0]["text"], "Nice!")
+            platforms.reply("linkedin", comments[0]["id"], "Thank you!", space)
+            reply = [c for c in fake.calls if c.method == "POST" and c.url.endswith("/comments")][-1].json
+            self.assertEqual(reply["parentComment"], "urn:li:comment:(urn:li:share:9,5)")
+            m = platforms.get_metrics("linkedin", post, "24h", space)
+        self.assertEqual((m["likes"], m["comments"]), (7, 1))
+        self.assertIn("reach", m["gaps"])  # LinkedIn does not give reach here.
 
 
 class ApprovalInChatTest(Base):

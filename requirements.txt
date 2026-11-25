@@ -4,3 +4,4 @@ imageio-ffmpeg>=0.5     # bundles ffmpeg for video editing
 boto3>=1.34             # only used when the R2 keys are set
 tzdata>=2024.1          # time zones on Windows
 pillow>=10.1            # sizes images per platform, draws captions
+requests-oauthlib>=2.0  # signs X (Twitter) requests (OAuth 1.0a)

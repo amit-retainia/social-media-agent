@@ -76,6 +76,14 @@ INSTAGRAM_ACCESS_TOKEN = _env("INSTAGRAM_ACCESS_TOKEN")  # Instagram API with In
 INSTAGRAM_USER_ID = _env("INSTAGRAM_USER_ID")
 FACEBOOK_PAGE_ID = _env("FACEBOOK_PAGE_ID")
 FACEBOOK_PAGE_TOKEN = _env("FACEBOOK_PAGE_TOKEN")  # A Page access token
+# ---- X (tools/x_api.py): the app's consumer keys + the account's access keys ("Read and write") ----
+X_API_KEY = _env("X_API_KEY")
+X_API_SECRET = _env("X_API_SECRET")
+X_ACCESS_TOKEN = _env("X_ACCESS_TOKEN")
+X_ACCESS_SECRET = _env("X_ACCESS_SECRET")
+# ---- LinkedIn (tools/linkedin.py): urn:li:person:<id> (profile) or urn:li:organization:<id> (company page) ----
+LINKEDIN_ACCESS_TOKEN = _env("LINKEDIN_ACCESS_TOKEN")
+LINKEDIN_AUTHOR_URN = _env("LINKEDIN_AUTHOR_URN")
 
 # ---- Media storage: Cloudflare R2. Meta downloads each post's media from an R2 link. ----
 R2_ACCOUNT_ID = _env("R2_ACCOUNT_ID")
@@ -179,7 +187,11 @@ def services() -> list[tuple[str, bool, str]]:
          "INSTAGRAM_ACCESS_TOKEN + INSTAGRAM_USER_ID"),
         ("Facebook Page: post, replies, metrics", bool(FACEBOOK_PAGE_ID and FACEBOOK_PAGE_TOKEN),
          "FACEBOOK_PAGE_ID + FACEBOOK_PAGE_TOKEN"),
-        ("Media storage for posting (Cloudflare R2)", r2, "R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET"),
+        ("X: post, metrics", all([X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET]),
+         "X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET"),
+        ("LinkedIn: post, replies, metrics", bool(LINKEDIN_ACCESS_TOKEN and LINKEDIN_AUTHOR_URN),
+         "LINKEDIN_ACCESS_TOKEN + LINKEDIN_AUTHOR_URN"),
+        ("Media storage for Instagram and Facebook (Cloudflare R2)", r2, "R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET"),
         ("Owner alerts and draft previews (Discord)", bool(DISCORD_WEBHOOK_URL), "DISCORD_WEBHOOK_URL"),
         ("Owner app on the phone (Telegram): preview, approve, ask for changes, alerts",
          bool(TELEGRAM_BOT_TOKEN and (TELEGRAM_CHAT_ID or any(
