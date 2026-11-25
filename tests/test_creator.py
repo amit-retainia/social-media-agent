@@ -220,6 +220,7 @@ class MachGenTest(CreatorTest):
         self.assertEqual((body["model"], body["task_type"]), ("Nano-Banana-2", "T2I"))
         self.assertIn(body["image_config"]["aspect_ratio"], ("1:1", "9:16"))
         self.assertEqual(body["image_config"]["height"], 1024)  # Only allowed heights are sent.
+        self.assertNotIn("image_output", body)  # Nano-Banana-2 rejects output_format.
         self.assertFalse(any("openai" in c.url for c in fake.calls))
 
     def test_machgen_reel_text_to_video(self):

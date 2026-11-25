@@ -90,24 +90,37 @@ def _run_task(body: dict, out_path: Path, kind: str) -> Path:
     if task["status"] != "COMPLETED":
         raise ServiceError(f"MachGen {kind} failed: {task.get('error_msg') or task['status']}")
     data = _call("GET", f"/api/v0/assets/{task_id}").content
+    if kind == "image":  # Models return PNG, JPEG or WebP: save it under its real type.
+        out_path = out_path.with_suffix(_image_ext(data))
     out_path.write_bytes(data)
     return out_path
 
 
+def _image_ext(data: bytes) -> str:
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return ".png"
+
+
 def generate_image(prompt: str, aspect: str, out_path: Path) -> Path:
-    """Text to image (T2I). Returns a PNG (the Creator then sizes it per platform)."""
+    """Text to image (T2I). Returns the image file (the Creator then sizes it per platform)."""
     model = config.MACHGEN_IMAGE_MODEL
     s = surface(model, "T2I")
     image_config = {"aspect_ratio": _aspect(aspect, s.get("aspect_ratios", [])),
                     "height": _nearest(1024 if aspect != "9:16" else 1440, s.get("heights", []))}
-    body = {"model": model, "task_type": "T2I", "prompt": prompt[:s.get("max_prompt_chars", 4000)],
-            "image_config": image_config, "image_output": {"output_format": "png"}}
-    return _run_task(body, out_path.with_suffix(".png"), "image")
+    body = {"model": model, "task_type": "T2I", "prompt": prompt[:s.get("max_prompt_chars") or 4000],
+            "image_config": image_config}
+    # Ask for PNG only from a model that lists it (Nano-Banana-2 lists none and rejects the field).
+    if "png" in (s.get("output_formats") or []):
+        body["image_output"] = {"output_format": "png"}
+    return _run_task(body, out_path, "image")
 
 
 def upload(path: Path, model: str) -> str:
     """Upload a local file. Returns the "@input/..." reference for src_image_urls."""
-    mime = "image/png" if path.suffix == ".png" else "image/jpeg"
+    mime = {".png": "image/png", ".webp": "image/webp"}.get(path.suffix.lower(), "image/jpeg")
     resp = request("POST", f"{_base()}/api/v0/upload", service="MachGen upload",
                    headers=_headers() | {"X-MachGen-Upload-Model": model},
                    files={"file": (path.name, path.read_bytes(), mime)})
@@ -127,7 +140,7 @@ def generate_video_clip(scene: dict, aspect: str, out_path: Path, image: Path | 
                     "height": _nearest(config.MACHGEN_VIDEO_HEIGHT, s.get("heights", []))}
     if task_type == "T2V" or s.get("aspect_ratios"):
         video_config["aspect_ratio"] = _aspect(aspect, s.get("aspect_ratios", []))
-    body = {"model": model, "task_type": task_type, "prompt": scene["visual"][:s.get("max_prompt_chars", 2000)],
+    body = {"model": model, "task_type": task_type, "prompt": scene["visual"][:s.get("max_prompt_chars") or 2000],
             "video_config": video_config}
     if image is not None:
         body["src_image_urls"] = [upload(image, model)]

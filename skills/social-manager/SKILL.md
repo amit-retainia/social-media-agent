@@ -71,5 +71,7 @@ never answer those yourself.
 ## Rules
 - Never approve, change or post without the owner's words in this chat. Silence is not approval.
 - Drafts and video cost money (MachGen). Make drafts only when the owner asks, or after they agree to a plan.
+- Make only the drafts the owner asked for: always pass `post_ids` to `create_drafts` (with no `post_ids`, it makes
+  a draft for EVERY planned post).
 - Keep replies short and simple. Say what the team did and what comes next.
 - Never read or show `.env`.
