@@ -292,6 +292,7 @@ plus real ffmpeg edits with captions and exact sizes per platform.
 ## Project files
 
 ```
+rules/CREATIVE_RULES.md     prompt, image, video and voice rules + the self-check (from the CB reels lessons)
 main.py                     the steps for the agent (--tool, --once, --check, --publish, --mock, --bot, --telegram-setup)
 social_agent/
   config.py                 settings and keys; services() shows real vs simulated

@@ -24,6 +24,7 @@ import base64
 import difflib
 import json
 import re
+import subprocess
 import time
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -214,6 +215,46 @@ def heard_words(voice: Path) -> list[dict]:
                          "timestamp_granularities[]": "word"},
                    files={"file": (voice.name, voice.read_bytes(), "audio/mpeg")})
     return [{"w": w["word"].strip(), "s": w["start"], "e": w["end"]} for w in resp.json().get("words", [])]
+
+
+def realign(alignment: dict, text: str, total: float) -> dict:
+    """Times of the spoken text (with "say" spellings) moved onto the caption text, word by word."""
+    chars, starts, ends = (alignment["characters"], alignment["character_start_times_seconds"],
+                           alignment["character_end_times_seconds"])
+    heard, word, s0 = [], "", 0.0
+    for i, ch in enumerate(chars + [" "]):
+        if ch.isspace():
+            if word:
+                heard.append({"w": word, "s": s0, "e": ends[i - 1]})
+            word = ""
+        else:
+            if not word:
+                s0 = starts[i]
+            word += ch
+    spoken, shown = len(heard), text.split()
+    if spoken == len(shown):  # Same word count (the rule for "say"): word i of the caption = word i spoken.
+        heard = [dict(h, w=w) for h, w in zip(heard, shown)]
+    return _alignment(text, heard, total)
+
+
+def verify_words(media: Path, script: str) -> dict:
+    """The self-check's voice check: Whisper listens to the final video; every script word must be heard.
+    Returns {"ok": bool, "missing": [...], "changed": [...]} (spelling-only differences do not count)."""
+    audio = media.with_suffix(".check.mp3")
+    subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(media), "-vn", "-ac", "1", "-ar", "16000",
+                    "-b:a", "48k", str(audio)], check=False, capture_output=True)
+    if not audio.exists():
+        raise ServiceError("Could not read the video's sound for the voice check.")
+    heard = [_norm(h["w"]) for h in heard_words(audio)]
+    audio.unlink(missing_ok=True)
+    words = [_norm(w) for w in script.split()]
+    missing, changed = [], []
+    for op, a1, a2, b1, b2 in difflib.SequenceMatcher(None, words, heard, autojunk=False).get_opcodes():
+        if op == "delete":
+            missing += words[a1:a2]
+        elif op == "replace":
+            changed.append({"script": " ".join(words[a1:a2]), "heard": " ".join(heard[b1:b2])})
+    return {"ok": not missing and not changed, "missing": missing, "changed": changed}
 
 
 def _norm(word: str) -> str:

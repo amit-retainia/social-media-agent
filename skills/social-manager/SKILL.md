@@ -21,6 +21,8 @@ For long JSON, write it to a file and pass `--args "$(cat /tmp/args.json)"`.
 ## "needs_text": you write, the step does the rest
 When a step answers `"status": "needs_text"`, it gives you `do`, `rules`, `shape` and `data`.
 1. Write the text exactly by `rules`, in the JSON `shape`, using only `data` (never invent prices, dates or facts).
+   For drafts, `rules` holds `rules/CREATIVE_RULES.md`: read it in full every time. Write STRONG prompts (its
+   section 1): real details, action, setting, light, camera, mood, textures. Generic prompts make dull, fake pictures.
 2. Run the step that `do` names, with your text added (`posts`, `drafts`, `learnings` or `replies`).
 
 | Step | `--args` | What it does |
@@ -32,7 +34,8 @@ When a step answers `"status": "needs_text"`, it gives you `do`, `rules`, `shape
 | `plan_week` | `{"week": "next"}` (or `"this"`), optional `"task"`; then + `"posts"` | Weekly plan, a script per post |
 | `plan_posts` | `{"task": "<owner news, their words>", "number_of_posts": 1}`, optional `"preferred_day"`; then + `"posts"` | Post(s) about news on the next good day |
 | `show_plan` | `{}` | The plan by day |
-| `create_drafts` | `{}`; then `{"drafts": {"<post id>": {...}}}` | Makes images, video, voice from your text; sends each draft to Discord |
+| `create_drafts` | `{"post_ids": [...]}`; then `{"post_ids": [...], "drafts": {"<post id>": {...}}}` | Makes images, video, voice from your text; the draft waits in `checking` for your self-check |
+| `mark_checked` | `{"post_id": "<id>", "checks": [{"file", "result": "pass", "note"}]}` | After your self-check: sends the draft to the owner and Discord |
 | `show_drafts` | `{}` | Drafts waiting for approval: text, time, platforms, media file paths |
 | `approve_draft` | `{"post_id": "<id>"}` | The owner approved: it posts at its time |
 | `request_changes` | `{"post_id": "<id>", "note": "<owner's words>"}` | Then write the new draft (create_drafts) |
@@ -55,13 +58,31 @@ If one says `needs_login`, tell the owner its token must be renewed.
 - A lasting fact (new hours, new product): `update_brand_brief`.
 - "how did my posts do?": `run_analyst`, write the learnings, `save_learnings`, then say them in plain words.
 
+## Self-check: before the owner sees anything
+`create_drafts` answers `check_first`: each draft has a `review` with every image, a frame sheet per reel scene
+(6 frames of its clip) and a `voice_check` (words missing or changed in the final video).
+1. Open EVERY review file yourself, one by one, and check it with section 6 of `rules/CREATIVE_RULES.md`
+   (subject clear and real, no text or logos, normal hands and faces, real scale and physics, overlay areas clear,
+   reel action moves forward with no morphing, voice: every word heard, strong enough to stop a scroll).
+2. A fail: rewrite ONLY the failed prompts (better and stronger), keep every passed prompt word for word, and run
+   `create_drafts` again with that post's draft. Only the changed images or clips are paid for. At most 2 fix rounds.
+3. All pass: run `mark_checked` with one line per review file (`file`, `result` "pass", `note`: what you saw, for
+   example "cake centered, one hand, no text"). Never write a check for a file you did not open.
+   Still failing after 2 rounds: mark that file `"owner_decides": true` and tell the owner what is doubtful.
+
 ## Drafts: the owner approves here
-After `create_drafts`, or when the owner asks what is waiting: run `show_drafts`. For each draft, show the images or the
+After `mark_checked`, or when the owner asks what is waiting: run `show_drafts`. For each draft, show the images or the
 video (the `files` paths) and the text, the platforms and the time. Ask: "Approve, or tell me what to change."
 - "approve", "looks good", "yes": `approve_draft`. Tell them the day and time it goes out.
 - Any change ("say it is eggless", "brighter photo"): `request_changes` with their exact words, write the new draft
-  the way it asks (`create_drafts` with `drafts`), then show the new version.
+  the way it asks (`create_drafts` with `drafts`; change only what the owner asked), self-check it, `mark_checked`,
+  then show the new version.
 - If several drafts wait, ask which one they mean. Never guess.
+- The owner's own photo or video, or an image you made (for example one with text on it): copy it into
+  `data/businesses/<business>/media_library/<post id>/owner/` (several files are used in name order: one per image
+  or scene). Then `request_changes` with a note like "use the owner's image", write the draft again, and
+  `create_drafts` with that post id. The Creator uses those files before any AI image (no MachGen cost) and sizes
+  them for each platform.
 
 ## Routine (every 15 minutes)
 The routine runs `main.py --once`: reminders, previews, posting on time. If it says comments wait for a reply,

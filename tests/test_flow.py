@@ -145,13 +145,18 @@ class AgentWritesTextTest(Base):
         self.assertEqual(ask["data"]["posts"][0]["id"], post_id)
         draft = {"final_copy": "Our new chocolate cake is here!", "caption": "New cake", "hashtags": ["#cake"],
                  "image_prompts": ["A chocolate cake on a wooden table, soft window light"]}
-        self.assertEqual(m.run_tool("create_drafts", {"drafts": {post_id: draft}})["status"], "drafts_ready")
+        made = m.run_tool("create_drafts", {"drafts": {post_id: draft}})
+        self.assertEqual(made["status"], "check_first")  # The agent checks first; the owner sees nothing yet.
+        self.assertIn("self-check", made["check"].lower())
+        self.assertIn("error", m.run_tool("approve_draft", {"post_id": post_id}))  # Not before the check.
+        self.assertEqual(m.run_tool("mark_checked", {"post_id": post_id, "checks": []})["status"], "pending_approval")
         self.assertEqual(space.get_post(post_id)["draft"]["final_copy"], "Our new chocolate cake is here!")
 
         ask = m.run_tool("request_changes", {"post_id": post_id, "note": "say it is eggless"})
         self.assertEqual(ask["status"], "needs_text")
         self.assertEqual(ask["data"]["posts"][0]["owner_change_notes"], ["say it is eggless"])
         m.run_tool("create_drafts", {"drafts": {post_id: dict(draft, final_copy="Eggless chocolate cake!")}})
+        m.run_tool("mark_checked", {"post_id": post_id, "checks": []})
         self.assertEqual(space.get_post(post_id)["draft"]["version"], 2)
         self.assertEqual(m.run_tool("approve_draft", {"post_id": post_id})["status"], "approved")
 

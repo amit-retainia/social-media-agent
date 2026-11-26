@@ -21,7 +21,8 @@ TOOLS = {
     "plan_week": "week: this | next, task (owner wishes), posts (written by you, after needs_text)",
     "plan_posts": "task (owner news), number_of_posts, preferred_day, posts (written by you, after needs_text)",
     "show_plan": "(none)",
-    "create_drafts": "post_ids (optional), drafts: {post id: draft} (written by you, after needs_text)",
+    "create_drafts": "post_ids, drafts: {post id: draft} (written by you, after needs_text; again to fix a failed check)",
+    "mark_checked": "post_id, checks: [{file, result: pass|fail, note}] - after the self-check, sends it to the owner",
     "show_drafts": "(none)",
     "approve_draft": "post_id",
     "request_changes": "post_id, note (owner's words), draft (optional: the new text, written by you)",
@@ -74,6 +75,8 @@ class Manager:
             return planner.show_plan(s)
         if name == "create_drafts":
             return creator.run(s, args.get("post_ids"), args.get("drafts"))
+        if name == "mark_checked":
+            return creator.mark_checked(s, args["post_id"], args.get("checks", []))
         if name == "show_drafts":
             return {"drafts": [_draft_view(s, p) for p in s.posts_with_status("pending_approval")]}
         if name in ("approve_draft", "request_changes"):
@@ -87,6 +90,8 @@ class Manager:
             out = owner_approval.request_changes(s, post["id"], args["note"], via="chat", draft=args.get("draft"))
             if out.get("status") == "needs_text":
                 return out
+            if s.get_post(post["id"])["status"] == "checking":
+                return {"status": "check_first", "drafts": [out], "check": "Self-check the new version, then mark_checked."}
             owner_approval.send_previews(s)
             return {"status": "remade", "draft": _draft_view(s, s.get_post(post["id"]))}
         if name == "publish_due":

@@ -100,6 +100,15 @@ def still_clip(image: Path, seconds: float, aspect: str, out_path: Path, zoom: b
     return out_path
 
 
+def contact_sheet(clip: Path, out_path: Path, frames: int = 6) -> Path:
+    """Frames spread over a clip, in one picture (3 x 2), for the self-check."""
+    seconds = media_duration(clip) or 5.0
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    run_ffmpeg(["-i", str(clip), "-vf", f"fps={frames / seconds:.4f},scale=360:-2,tile=3x2", "-frames:v", "1",
+                "-q:v", "4", str(out_path)], what="ffmpeg frame sheet")
+    return out_path
+
+
 # ---------------- timing and captions ----------------
 def timeline(scenes: list[dict], alignment: dict | None = None, voice_length: float = 0.0) -> list[dict]:
     """Start, end and timed words for each scene.

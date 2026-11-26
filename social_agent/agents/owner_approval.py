@@ -63,7 +63,7 @@ def check_overdue(space: BusinessSpace, app=None) -> list[dict]:
     """Slow approvals: remind before the post time; past the time, move the post to the next free slot."""
     tz = planner.local_tz(space.get_brand_brief())
     now, done = now_utc(), []
-    for post in space.posts_with_status("pending_approval"):
+    for post in space.posts_with_status("pending_approval", "checking"):
         at = parse_time(post["scheduled_at"])
         if at <= now:
             new = planner.next_free_slot(space, post["platforms"], now, fmt=post["format"], exclude_id=post["id"])

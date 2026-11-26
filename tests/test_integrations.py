@@ -114,6 +114,26 @@ class AIModelsTest(Base):
             _, alignment = ai_models.voiceover_with_timing("One two", self.tmp / "voice")
         self.assertAlmostEqual(alignment["character_end_times_seconds"][-1], 2.0, delta=0.1)
 
+    def test_voice_check_finds_missing_words(self):
+        from social_agent.tools import ai_models
+        from tests.test_creator import make_mp3
+        media = self.tmp / "final.mp3"
+        make_mp3(media, 2.0)
+        heard = {"words": [{"word": w, "start": i * 0.3, "end": i * 0.3 + 0.2}
+                           for i, w in enumerate(["Our", "new", "cake", "is", "here."])]}
+        _, patch = http([("POST", "/audio/transcriptions", heard)])
+        with patch, mock.patch.object(config, "GROQ_API_KEY", "gsk"):
+            out = ai_models.verify_words(media, "Our new chocolate cake is here.")
+        self.assertEqual((out["ok"], out["missing"]), (False, ["chocolate"]))
+
+    def test_say_spelling_times_move_to_caption_words(self):
+        from social_agent.tools import ai_models
+        from tests.test_creator import alignment_for
+        spoken = "Price is four-ninety-nine rupees"
+        al = ai_models.realign(alignment_for(spoken, 4.0), "Price is Rs 499", 4.0)
+        self.assertEqual("".join(al["characters"]), "Price is Rs 499")
+        self.assertAlmostEqual(al["character_start_times_seconds"][9], 9 / len(spoken) * 4.0, places=2)
+
     def test_edit_video_with_ffmpeg(self):
         from social_agent.tools import ai_models
         ff = ai_models.ffmpeg_exe()

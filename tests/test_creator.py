@@ -266,6 +266,37 @@ class MachGenTest(CreatorTest):
         uploads = [c for c in fake.calls if c.url.endswith("/api/v0/upload")]
         self.assertEqual(uploads[0].headers["X-MachGen-Upload-Model"], "Vidu-Q3-Turbo")
 
+    def test_self_check_gate_and_only_changed_items_are_paid_again(self):
+        from social_agent.agents import creator
+        post = self.add("carousel", ["instagram"], POST_SCRIPT)
+        routes = self.routes()
+        routes.append(("GET", "/api/v0/assets/", png_bytes(1024, 1024)))
+        fake, patch = http(routes)
+        text = {"final_copy": "Fresh cake", "caption": "New", "hashtags": ["#cake"],
+                "image_prompts": ["A chocolate cake on a wooden table", "A slice on a white plate"]}
+
+        def gens():
+            return [c.json for c in fake.calls if c.url.endswith("/api/v0/generate")]
+        with patch, mock.patch.object(config, "MACHGEN_API_KEY", "MGA_k:s"), mock.patch.object(config, "MOCK", False):
+            out = creator.run(self.space, drafts={post["id"]: text})
+            self.assertEqual(out["status"], "check_first")
+            self.assertEqual(self.space.get_post(post["id"])["status"], "checking")
+            self.assertEqual(len(gens()), 2)
+            self.assertIn("Photorealistic", gens()[0]["prompt"])  # The fixed image rule is in every prompt.
+            review = out["drafts"][0]["review"]["images"]
+            self.assertEqual(len(review), 2)
+            self.assertIn("not_checked", creator.mark_checked(self.space, post["id"], [{"file": review[0], "result": "pass"}]))
+            bad = [{"file": review[0], "result": "pass"}, {"file": review[1], "result": "fail", "note": "extra hand"}]
+            self.assertIn("failed", creator.mark_checked(self.space, post["id"], bad))
+            # Fix: only the failed prompt changes, so only one new image is paid for.
+            fixed = dict(text, image_prompts=[text["image_prompts"][0], "A slice on a white plate, one hand"])
+            out = creator.run(self.space, drafts={post["id"]: fixed})
+            self.assertEqual(len(gens()), 3)
+            review = out["drafts"][0]["review"]["images"]
+            ok = creator.mark_checked(self.space, post["id"], [{"file": f, "result": "pass"} for f in review])
+        self.assertEqual(ok["status"], "pending_approval")
+        self.assertEqual(len(self.space.get_post(post["id"])["draft"]["checks"]), 2)
+
     def test_machgen_failed_task_gives_warning(self):
         from social_agent.agents import creator
         post = self.add("post", ["instagram"], POST_SCRIPT)
