@@ -101,6 +101,23 @@ class MockFlowTest(Base):
         m.run_tool("run_analyst", {"simulate_time_passed": True})
         self.assertTrue(space.get_learnings())
 
+        # Dexere is the record: export the rows, lose the disk, restore from the rows.
+        rows = m.run_tool("export", {})
+        self.assertEqual(rows["posts"][0]["post_id"], post_id)
+        self.assertEqual(rows["drafts"][0]["draft_id"], f"{post_id}-v2")
+        self.assertTrue(rows["metrics"] and rows["comments"] and rows["learnings"])
+        self.assertEqual({c["status"] for c in rows["comments"]}, {"replied", "sent_to_owner"})
+        before = space.get_post(post_id)
+        shutil.rmtree(space.root)
+        fresh = BusinessSpace("test-bakery")
+        out = Manager(fresh, app).run_tool("restore", {"rows": rows})
+        self.assertEqual(out["posts"], 1)
+        after = fresh.get_post(post_id)
+        self.assertEqual((after["status"], after["draft"]["version"], after["draft"]["final_copy"]),
+                         (before["status"], 2, before["draft"]["final_copy"]))
+        self.assertEqual(fresh.get_brand_brief()["business_name"], "Sweet Crumbs")
+        self.assertIn("error", Manager(fresh, app).run_tool("restore", {"rows": rows}))  # Only on a fresh disk.
+
     def test_publisher_retries_then_reschedules(self):
         from social_agent.agents import publisher
         from social_agent.business_space import BusinessSpace

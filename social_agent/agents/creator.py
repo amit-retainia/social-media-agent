@@ -34,7 +34,7 @@ from pathlib import Path
 
 from .. import config
 from ..business_space import BusinessSpace
-from ..tools import ai_models, media_edit
+from ..tools import ai_models, media, media_edit
 from ..tools.http import ServiceError
 from . import planner
 
@@ -178,6 +178,12 @@ def make_draft(space: BusinessSpace, post: dict, text: dict | None = None) -> di
     brief = space.get_brand_brief() or {}
     folder = space.media_folder(post["id"])
     version = len(post.get("change_notes", [])) + 1
+    warnings: list[str] = []
+    if media.on() and not (folder / "cache").exists():
+        try:  # A fresh disk: bring back the images already paid for, so nothing is paid twice.
+            media.pull(space, post["id"])
+        except Exception as exc:  # noqa: BLE001 - without them the draft is only made again (costs money)
+            warnings.append(f"Could not read the kept media from R2: {str(exc)[:200]}")
 
     # Steps 1-2: get the script; the final copy (+ image prompts or scenes) comes from the agent.
     if text is not None:
@@ -191,7 +197,6 @@ def make_draft(space: BusinessSpace, post: dict, text: dict | None = None) -> di
         raise ValueError(f"No draft text for {post['id']}. Run create_drafts and write the text it asks for.")
 
     # Steps 3-5: media files, captions, sized per platform.
-    warnings: list[str] = []
     aspects = sorted({ai_models.size_for(p, post["format"]) for p in post["platforms"]})
     owner_media = _owner_media(space, post, folder)
     if post["format"] in ("reel", "video"):
@@ -207,16 +212,27 @@ def make_draft(space: BusinessSpace, post: dict, text: dict | None = None) -> di
     draft["sizes"] = {p: ai_models.size_for(p, post["format"]) for p in post["platforms"]}
     draft["platform_text"] = platform_texts(draft, post["platforms"])
     draft["version"] = version
+    draft["made_at"] = space_today()
     draft["simulated"] = any(ai_models.is_placeholder(f) for f in files)
     if warnings:
         draft["warnings"] = warnings
     draft["review"] = _review(space, post, draft, files, folder, version, extra)
+    if media.on():  # Keep the paid images and the final files in R2.
+        try:
+            draft["r2"] = media.push(space, post["id"])
+        except Exception as exc:  # noqa: BLE001 - the next draft run tries again
+            draft.setdefault("warnings", []).append(f"Could not keep the media in R2: {str(exc)[:200]}")
     (folder / f"draft_v{version}.json").write_text(json.dumps(draft, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # Step 7: the self-check first ("checking"), then owner approval ("pending_approval"). MOCK skips the check.
     space.update_post(post["id"], draft=draft, status="pending_approval" if config.MOCK else "checking")
     return {"id": post["id"], "version": version, "files": draft["files"], "simulated": draft["simulated"],
             "warnings": warnings, "review": draft["review"]}
+
+
+def space_today() -> str:
+    from ..business_space import now_utc
+    return now_utc().date().isoformat()
 
 
 def _review(space, post, draft, files, folder, version, extra) -> dict:

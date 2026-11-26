@@ -7,6 +7,7 @@ Order: 1 brief -> 2 plan + script -> 3 create -> 4 owner approval -> 5 post -> 6
 A step that needs text answers {"status": "needs_text", "rules", "shape", "data"}; the agent writes the
 text and runs the step again with it.
 """
+from .. import records
 from ..business_space import BusinessSpace
 from . import analyst, creator, interviewer, owner_approval, planner, publisher
 
@@ -31,6 +32,8 @@ TOOLS = {
     "save_learnings": "learnings: [lines]",
     "show_comments": "(none) - comments that wait for a reply",
     "reply_comments": "replies: [{post_id, comment_id, text}]",
+    "export": "post_ids (optional) - rows for the Dexere tables; save them after every step that changed something",
+    "restore": "rows: {businesses, posts, drafts, comments, metrics, learnings} from Dexere - a fresh disk only",
 }
 
 
@@ -105,4 +108,10 @@ class Manager:
             return publisher.pending_comments(s)
         if name == "reply_comments":
             return {"status": "done", "results": publisher.send_replies(s, args["replies"])}
+        if name == "export":
+            return records.export(s, args.get("post_ids"))
+        if name == "restore":
+            if s.get_calendar() and not args.get("force"):
+                return {"error": "This disk already has this business. restore is only for a fresh disk."}
+            return records.restore(s, args["rows"])
         return {"error": f"Unknown step {name}. Steps: {', '.join(TOOLS)}"}

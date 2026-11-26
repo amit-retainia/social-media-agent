@@ -80,6 +80,7 @@ def reply_to_comments(space: BusinessSpace, app) -> list[dict]:
     for post in space.posts_with_status("posted"):
         seen = set(post.get("replied_comment_ids", []))
         pending = list(post.get("pending_comments", []))
+        log = list(post.get("comment_log", []))  # Answered and sent-to-owner comments (saved to Dexere).
         for platform in post["platforms"]:
             for c in platforms.fetch_new_comments(platform, post, space):
                 if c["id"] in seen:
@@ -89,16 +90,19 @@ def reply_to_comments(space: BusinessSpace, app) -> list[dict]:
                     msg = f"Hard comment on {platform} ({post['id']}) from {c['from']}: \"{c['text']}\""
                     app.alert(msg)
                     space.add_alert(msg)
+                    log.append({"platform": platform, **c, "status": "sent_to_owner", "at": now_utc().isoformat()})
                     out.append({"comment": c["id"], "result": "sent to owner"})
                     continue
                 if not config.MOCK:  # The agent writes the reply (show_comments -> reply_comments).
-                    pending.append({"platform": platform, "id": c["id"], "from": c["from"], "text": c["text"]})
+                    pending.append({"platform": platform, "id": c["id"], "from": c["from"], "text": c["text"],
+                                    "at": now_utc().isoformat()})
                     out.append({"comment": c["id"], "result": "waits for a reply"})
                     continue
                 text = f"Thank you so much! 💛 - {brief.get('business_name', 'the team')}"
                 platforms.reply(platform, c["id"], text, space)
+                log.append({"platform": platform, **c, "status": "replied", "reply": text, "at": now_utc().isoformat()})
                 out.append({"comment": c["id"], "result": "replied", "reply": text})
-        space.update_post(post["id"], replied_comment_ids=sorted(seen), pending_comments=pending)
+        space.update_post(post["id"], replied_comment_ids=sorted(seen), pending_comments=pending, comment_log=log)
     return out
 
 
@@ -128,6 +132,7 @@ def send_replies(space: BusinessSpace, replies: list[dict]) -> list[dict]:
             continue
         platforms.reply(c["platform"], c["id"], r["text"], space)
         pending.remove(c)
-        space.update_post(post["id"], pending_comments=pending)
+        log = post.get("comment_log", []) + [dict(c, status="replied", reply=r["text"])]
+        space.update_post(post["id"], pending_comments=pending, comment_log=log)
         out.append({"comment": c["id"], "result": "replied"})
     return out

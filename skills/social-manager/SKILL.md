@@ -18,6 +18,24 @@ Run from `/workspace/social-media-agent`:
 `--tool steps` lists every step and its input. If `.venv` is missing, run `bash setup.sh` first.
 For long JSON, write it to a file and pass `--args "$(cat /tmp/args.json)"`.
 
+## Dexere: where everything is kept
+Dexere is the source of truth. The files on the Bot's disk are only a working copy. Media (images, final videos) is
+kept in R2 by the app itself.
+- Start of every run: `dexere_enter_space` with `"Social Media Agent"`; keep the `orientation_token` for every write.
+  `dexere_tables` once gives each table's id. Tables (first field = the row's key): `businesses` (business),
+  `posts` (post_id), `drafts` (draft_id), `comments` (comment_id), `metrics` (key), `learnings` (learning).
+  Every table has a `business` column: always filter by the business you work on.
+- **After every step that changed something** (brief saved, posts planned, drafts made or checked, approved,
+  posted, replies sent, learnings saved): run `export` with the `post_ids` the step touched (`{}` after a brief or
+  learnings change) and save its rows: for each row, `dexere_query_rows` by its key; patch the row that exists
+  (`row_id` + only the changed fields), or create it (`dexere_upsert_row` with `table_id` + `data`). Never delete a
+  row. Then one `dexere_add_log` line: type `event` for team work, `decision` for the owner's words
+  (for example `sweet-crumbs: post-1a2b approved by the owner for Mon 30 Nov 09:00`), metadata `{"business", "post"}`.
+- **Fresh disk** (`show_business_space` has no brand brief, but the business has a row in `businesses`): read every
+  row of that business from the 6 tables and run `restore` with `{"rows": {"businesses": [...], "posts": [...], ...}}`
+  (the same shape `export` gives). The app brings the media back from R2. Never `restore` over a business the disk
+  already has.
+
 ## "needs_text": you write, the step does the rest
 When a step answers `"status": "needs_text"`, it gives you `do`, `rules`, `shape` and `data`.
 1. Write the text exactly by `rules`, in the JSON `shape`, using only `data` (never invent prices, dates or facts).

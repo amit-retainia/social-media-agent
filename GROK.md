@@ -16,13 +16,20 @@ Owner ── chat ──▶ Grok Bot "Social Manager" (skill: skills/social-mana
 Routine every 15 min: main.py --once
     reminders for drafts not approved ─▶ posts what is due (Instagram, Facebook, X, LinkedIn) ─▶ replies to comments
 ```
-Files: `data/businesses/<business>/` (brand brief, calendar, plan, media library). `/workspace` keeps them.
-Posting: the media goes to Cloudflare R2; Instagram and Facebook download it from a link.
+Storage:
+- **Text in Dexere**, space "Social Media Agent": tables businesses, posts, drafts, comments, metrics, learnings
+  (every table has a `business` column) and the log. Grok writes the rows after each step (`--tool export`) and
+  rebuilds a fresh disk from them (`--tool restore`).
+- **Media in Cloudflare R2** (`MEDIA_UPLOAD=1`), key `sms/<business>/media_library/<post id>/...`: the paid AI
+  images (post images, reel start frames), the final files per size, the owner's photos. Like CB Reels, clips and
+  voice stay on disk only. Instagram and Facebook download the media from R2 links.
+- `data/businesses/<business>/` on the Bot's disk is only the working copy.
 
 ## Setup (once)
 1. Put the code at `/workspace/social-media-agent` (git clone, or upload a zip).
 2. Add the keys (table below) with the secure secret card, never in the normal chat.
-   They go in `/workspace/social-media-agent/.env`.
+   They go in `/workspace/social-media-agent/.env`. Also add `MEDIA_UPLOAD=1` (the Bot only, like `REELS_UPLOAD`).
+   Dexere: connect it in Grok (Connect apps -> custom connector `https://mcp.dexere.ai/mcp`, same as CB Reels).
 3. In the bot's chat: "Run `cd /workspace/social-media-agent && bash setup.sh`". It installs the packages and prints
    the missing keys and which services are REAL or SIMULATED.
 4. Create the bot "Social Manager". Ask it to save a skill:
@@ -46,7 +53,8 @@ After a computer update the Python environment is gone: run `bash setup.sh` agai
 | `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_TOKEN` | post to a Facebook Page | Meta app, a Page access token (Graph API Explorer) |
 | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET` | post to X, numbers (X replies are not read) | developer.x.com, your app, Keys and tokens ("Read and write"). X's API is paid: check the price |
 | `LINKEDIN_ACCESS_TOKEN`, `LINKEDIN_AUTHOR_URN` | post to LinkedIn, replies, likes and comments | LinkedIn developer app. Profile: product "Share on LinkedIn", URN `urn:li:person:<id>`. Company page: product "Community Management API" (LinkedIn must approve it), URN `urn:li:organization:<id>`. Token lasts 60 days |
-| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | media links for Instagram and Facebook | Cloudflare, R2, a private bucket + API token |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | keeps the media; links for Instagram and Facebook | Cloudflare, R2, the new private bucket + an API token with "Object Read & Write" on it only. Lifecycle rule: prefix `sms/`, delete after 120 days |
+| `MEDIA_UPLOAD` | `1` on the Bot: keep media in R2 | - |
 | `TIMEZONE` (optional) | default posting time zone, e.g. `Asia/Kolkata` | |
 | `FISH_VOICE_ID` (optional) | narrator voice (Fish `reference_id`) | default: COLD CASE |
 

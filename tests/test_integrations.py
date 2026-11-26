@@ -360,6 +360,56 @@ class XAndLinkedInTest(Base):
         self.assertIn("reach", m["gaps"])  # LinkedIn does not give reach here.
 
 
+class FakeS3:
+    """In-memory R2 bucket (the boto3 calls media.py and storage.py use)."""
+
+    def __init__(self):
+        self.objects, self.uploads = {}, []
+
+    def head_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise KeyError(Key)
+        return {"Metadata": self.objects[Key][1]}
+
+    def upload_file(self, path, bucket, key, ExtraArgs=None):
+        self.uploads.append(key)
+        self.objects[key] = (open(path, "rb").read(), (ExtraArgs or {}).get("Metadata", {}))
+
+    def download_file(self, bucket, key, path):
+        open(path, "wb").write(self.objects[key][0])
+
+    def get_paginator(self, name):
+        fake = self
+        return SimpleNamespace(paginate=lambda Bucket, Prefix: [
+            {"Contents": [{"Key": k} for k in fake.objects if k.startswith(Prefix)]}])
+
+
+class MediaKeepTest(Base):
+    """Like CB Reels: paid images, final files and owner media are kept in R2; clips and voice stay on disk."""
+
+    def test_push_then_pull_on_a_fresh_disk(self):
+        import shutil
+        from social_agent.business_space import BusinessSpace
+        from social_agent.tools import media
+        s3 = FakeS3()
+        space = BusinessSpace("keep")
+        folder = space.media_folder("post-1")
+        (folder / "cache").mkdir()
+        for name in ["cache/image-abc.png", "cache/frame-def.png", "cache/clip-123.mp4", "cache/voice-9.mp3",
+                     "v1_9x16_final.mp4", "v1_1x1_image1.jpg", "v1_captions.srt", "draft_v1.json"]:
+            (folder / name).write_bytes(b"x" + name.encode())
+        with mock.patch("social_agent.tools.storage.client", lambda: s3),                 mock.patch.object(config, "R2_BUCKET", "sms-media"):
+            keys = media.push(space, "post-1")
+            self.assertEqual(sorted(k.rsplit("/", 1)[1] for k in keys),
+                             ["frame-def.png", "image-abc.png", "v1_1x1_image1.jpg", "v1_9x16_final.mp4"])
+            self.assertTrue(all(k.startswith("sms/keep/media_library/post-1/") for k in keys))
+            self.assertEqual(len(media.push(space, "post-1")), 4)
+            self.assertEqual(len(s3.uploads), 4)  # Unchanged files are not uploaded again.
+            shutil.rmtree(folder)  # A fresh disk.
+            self.assertEqual(media.pull(space, "post-1"), 4)
+        self.assertEqual((folder / "cache" / "image-abc.png").read_bytes(), b"xcache/image-abc.png")
+
+
 class ApprovalInChatTest(Base):
     """On Grok Bot: draft previews go to Discord; the owner answers in the chat (Manager tools)."""
 
