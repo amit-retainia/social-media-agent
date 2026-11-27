@@ -42,7 +42,8 @@ When a key is missing, that service is simulated, so the app still runs end to e
 | Video editing, captions, sizes | Joins clips, burns in captions, adds the voiceover, sizes every file per platform | no key (ffmpeg from `imageio-ffmpeg`, Pillow) | - |
 | Website reader | Interviewer reads your website | no key | - |
 
-`.env.example` lists every key with notes. See which services are real:
+`.env.example` lists the keys most setups need. The optional ones above and the "Settings" below work too:
+add them to `.env` only if you want them. See which services are real:
 
 ```bash
 python main.py --check
