@@ -23,7 +23,8 @@ Dexere is the source of truth. The files on the Bot's disk are only a working co
 kept in R2 by the app itself.
 - Start of every run: `dexere_enter_space` with `"Social Media Agent"`; keep the `orientation_token` for every write.
   `dexere_tables` once gives each table's id. Tables (first field = the row's key): `businesses` (business),
-  `posts` (post_id), `drafts` (draft_id), `comments` (comment_id), `metrics` (key), `learnings` (learning).
+  `posts` (post_id), `drafts` (draft_id), `comments` (comment_id), `metrics` (key), `learnings` (learning),
+  `followers` (key), `tests` (test_id).
   Every table has a `business` column: always filter by the business you work on.
 - **After every step that changed something** (brief saved, posts planned, drafts made or checked, approved,
   posted, replies sent, learnings saved): run `export` with the `post_ids` the step touched (`{}` after a brief or
@@ -32,7 +33,7 @@ kept in R2 by the app itself.
   row. Then one `dexere_add_log` line: type `event` for team work, `decision` for the owner's words
   (for example `sweet-crumbs: post-1a2b approved by the owner for Mon 30 Nov 09:00`), metadata `{"business", "post"}`.
 - **Fresh disk** (`show_business_space` has no brand brief, but the business has a row in `businesses`): read every
-  row of that business from the 6 tables and run `restore` with `{"rows": {"businesses": [...], "posts": [...], ...}}`
+  row of that business from the 8 tables and run `restore` with `{"rows": {"businesses": [...], "posts": [...], ...}}`
   (the same shape `export` gives). The app brings the media back from R2. Never `restore` over a business the disk
   already has.
 
@@ -45,7 +46,7 @@ When a step answers `"status": "needs_text"`, it gives you `do`, `rules`, `shape
 
 | Step | `--args` | What it does |
 |---|---|---|
-| `show_business_space` | `{"section": "summary"}` (or `brand_brief`, `content_calendar`, `content_plan`, `learnings`) | Read what the team knows |
+| `show_business_space` | `{"section": "summary"}` (or `brand_brief`, `content_calendar`, `content_plan`, `learnings`, `followers`, `reports`) | Read what the team knows |
 | `brief_questions` | `{}` | The interview questions and the brand brief fields |
 | `update_brand_brief` | `{"changes": {...}}` | Save or change the brand brief |
 | `connect_accounts` | `{"platforms": ["instagram", "facebook", "x", "linkedin"]}` (only the ones the owner uses) | Check each platform's keys |
@@ -60,6 +61,10 @@ When a step answers `"status": "needs_text"`, it gives you `do`, `rules`, `shape
 | `publish_due` | `{}`; `{"post_now": true}` only if the owner says "post now" | Posts approved posts at their time |
 | `show_comments` / `reply_comments` | `{}` / `{"replies": [{"post_id", "comment_id", "text"}]}` | Comments that wait for your reply |
 | `run_analyst` / `save_learnings` | `{}` / `{"learnings": [...]}` | Numbers, then your learnings for the next plan |
+| `show_tests` | `{}` | The running test, the queue of ideas, the last results |
+| `add_test` | `{"change": "format" \| "hour" \| "idea", "value": "...", "idea": "<short text>", "evidence": "<why>"}`; `"source": "owner", "first": true` when it is the owner's own idea | Put one new idea in the test queue |
+| `answer_test` | `{"test_id": "<id>", "answer": "yes" \| "no"}` | The owner's answer to a test idea |
+| `drop_test` | `{"test_id": "<id>"}` | Stop a queued or running test (only if the owner says so) |
 
 ## New business: the brand brief
 If `show_business_space` has no brand brief, run `brief_questions` and ask the owner the questions, ONE at a time.
@@ -75,6 +80,14 @@ If one says `needs_login`, tell the owner its token must be renewed.
   then show the draft (below).
 - A lasting fact (new hours, new product): `update_brand_brief`.
 - "how did my posts do?": `run_analyst`, write the learnings, `save_learnings`, then say them in plain words.
+- Tests: about 30% of each weekly plan are test posts (`data.tests` in `plan_week`): do exactly the one new thing,
+  write the rest as usual. The numbers decide a test, never you.
+  New ideas go to the queue with `add_test`, ONE change each: the owner's wish ("try more videos of me": `first`
+  true), a strong trend, or another account's post that did 3x its usual likes (`evidence`: the account and the
+  numbers). "What are you testing?": `show_tests`, say it in one line.
+  A content idea (`change` "idea") from you waits for the owner's yes: `add_test` answers `waiting_for_owner`.
+  With Telegram, the owner gets Yes / No buttons. Else ask them in this chat with the `ask_owner` text, and run
+  `answer_test` with their words. Never answer for them. No answer in 3 days = skipped.
 
 ## Self-check: before the owner sees anything
 `create_drafts` answers `check_first`: each draft has a `review` with every image, a frame sheet per reel scene
@@ -103,7 +116,9 @@ video (the `files` paths) and the text, the platforms and the time. Ask: "Approv
   them for each platform.
 
 ## Routine (every 15 minutes)
-The routine runs `main.py --once`: reminders, previews, posting on time. If it says comments wait for a reply,
+The routine runs `main.py --once`: reminders, previews, posting on time, post numbers and follower counts, and the
+weekly report to the owner, test results. After a round that saved numbers, run `export` and save the `metrics`,
+`followers`, `tests` and `learnings` rows. If it says comments wait for a reply,
 run `show_comments`, write the replies, run `reply_comments`. Complaints and hard comments go to the owner as alerts:
 never answer those yourself.
 

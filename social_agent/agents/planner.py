@@ -13,7 +13,8 @@ Gets: tasks from the Manager; trends; learnings from the Analyst.
 Gives: schedule to the calendar; script to the Creator.
 
 Two kinds of task from the Manager:
-  plan_week(...)  a weekly content calendar (posts_per_week from the brand brief).
+  plan_week(...)  a weekly content calendar (posts_per_week from the brand brief). About 30% of the posts are
+                  test posts: they try the running test's one new thing (experiments.py).
   run(...)        news from the owner ("I baked a new chocolate cake") -> a post on the next suitable day.
 Both save the plan to content_plan.json in the Business space, ready for the Creator.
 
@@ -26,7 +27,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import config
+from .. import config, experiments
 from ..business_space import BusinessSpace, now_utc, parse_time
 
 FORMATS = ["post", "carousel", "reel", "video"]
@@ -54,6 +55,8 @@ Pick topics, formats, dates and times, and write one script per post.
 Rules:
 - Follow the brand brief, its voice and its banned topics. Never invent prices or facts.
 - Use the learnings from the Analyst: do more of what works (format, time, platform, topic).
+- Tests ("tests" in the data): those posts try ONE new thing (a format, a time or an idea). Do exactly that one
+  thing and write the rest of the post as usual. All other posts use what works.
 - Search the web for current trends and dates (next 2 weeks) and use them when they fit the brand.
 - Formats: post (one image), carousel (3-6 slides), reel (short vertical video), video (longer video).
 - Pick scheduled_at from the free slots given (or a nearby time on the same day). One post per day.
@@ -146,18 +149,25 @@ def plan_week(space: BusinessSpace, task: str = "", week: str = "next", posts: l
                 "plan_file": str(space.root / "content_plan.json")}
 
     template = _week_template(n, ctx["best_format"])
+    test, n_test = experiments.plan_slots(space, n)
+    test_at = _test_template(template, test, n_test)
     earliest = max(now_utc() + timedelta(hours=config.PLANNER_MIN_LEAD_HOURS),
                    datetime.combine(monday, time(0), tz))
-    slots = []
-    for weekday, fmt, idea in template:
+    slots, test_slots = [], set()
+    for i, (weekday, fmt, idea) in enumerate(template):
         day = monday + timedelta(days=weekday)
-        want = datetime.combine(day, ctx["best_time"] or DEFAULT_TIMES[fmt], tz)
+        at = time(test["value"], 0) if i in test_at and test["change"] == "hour" else ctx["best_time"]
+        want = datetime.combine(day, at or DEFAULT_TIMES[fmt], tz)
         slot = next_free_slot(space, ctx["connected"], max(want, earliest), fmt=fmt,
-                              preferred_time=ctx["best_time"], taken=[s for s, _, _ in slots])
+                              preferred_time=at, taken=[s for s, _, _ in slots])
         if slot.astimezone(tz).date() <= sunday:
+            if i in test_at:
+                test_slots.add(len(slots))
             slots.append((slot, fmt, idea))
     if not slots:
         return {"status": "no_free_days", "message": f"No free days left in the week of {monday:%d %b}."}
+    tests = [{"post_number": k + 1, "test": test["idea"], "change": test["change"], "value": test["value"]}
+             for k in sorted(test_slots)]
 
     if posts is not None:
         posts = _fit_times(posts[:len(slots)], [s for s, _, _ in slots], tz)
@@ -167,8 +177,14 @@ def plan_week(space: BusinessSpace, task: str = "", week: str = "next", posts: l
         request = (f"Plan the week of {monday:%A %d %B %Y}. {len(slots)} posts. Mix the formats. "
                    f"Suggested pattern: {[(DAY_NAMES[s.astimezone(tz).weekday()], f, i) for s, f, i in slots]}. "
                    f"Extra wishes from the owner: {task or 'none'}")
-        return _needs_posts(ctx, request, len(slots), [s for s, _, _ in slots], "plan_week")
+        for t in tests:
+            request += f" Post {t['post_number']} is a TEST: {t['test']}. Change only that; write the rest as usual."
+        return _needs_posts(ctx, request, len(slots), [s for s, _, _ in slots], "plan_week", tests)
+    _mark_tests(posts, test, test_slots, [s for s, _, _ in slots])
     result = _finish(space, ctx, posts, task or "weekly plan", kind="week")
+    if test_slots:
+        experiments.assign(space, test["id"], [p["id"] for p in posts if p.get("test_id") == test["id"]])
+        result["test"] = {"idea": test["idea"], "posts": [p["id"] for p in posts if p.get("test_id") == test["id"]]}
     result["week_of"] = monday.isoformat()
     return result
 
@@ -264,7 +280,7 @@ def _context(space: BusinessSpace) -> dict:
         return {"error": {"status": "blocked",
                           "message": "No connected accounts. Run the Interviewer to connect them."}}
     tz = local_tz(brief)
-    learnings = [item["learning"] for item in space.get_learnings()[-10:]]
+    learnings = learnings_for(space)
     best_format, best_time = _learned_preferences(learnings)
     return {
         "brief": brief, "connected": connected, "tz": tz,
@@ -272,6 +288,14 @@ def _context(space: BusinessSpace) -> dict:
         "calendar": [{k: p[k] for k in ("topic", "format", "platforms", "scheduled_at", "status")}
                      for p in space.get_calendar() if p["status"] != "posted"],
     }
+
+
+def learnings_for(space: BusinessSpace) -> list[str]:
+    """The Analyst's last 10 notes, then the proven test results. Test results come last, so they win
+    (latest line wins) and never drop out when new notes come in."""
+    proven = experiments.proven(space)
+    notes = [item["learning"] for item in space.get_learnings()[-10:]]
+    return [n for n in notes if n not in proven] + proven
 
 
 def _learned_preferences(learnings: list[str]) -> tuple[str | None, time | None]:
@@ -298,7 +322,38 @@ def _week_template(n: int, best_format: str | None) -> list[tuple[int, str, str]
     return template
 
 
-def _needs_posts(ctx: dict, request: str, n: int, slots: list[datetime], step: str) -> dict:
+def _test_template(template: list[tuple[int, str, str]], test: dict | None, n_test: int) -> set[int]:
+    """Pick the week's test posts (the last ones). A format test changes their format."""
+    if not test or not n_test:
+        return set()
+    picked = []
+    for i in range(len(template) - 1, -1, -1):
+        if len(picked) < n_test and not (test["change"] == "format" and template[i][1] == test["value"]):
+            picked.append(i)
+    for i in picked:
+        if test["change"] == "format":
+            template[i] = (template[i][0], test["value"], template[i][2])
+    return set(picked)
+
+
+def _mark_tests(posts: list[dict], test: dict | None, test_slots: set[int], slots: list[datetime]) -> None:
+    """The test posts: tag them, and keep the one thing the test changes (format or hour) as planned."""
+    for i in test_slots:
+        if i >= len(posts):
+            continue
+        post = posts[i]
+        post["test_id"] = test["id"]
+        post["why"] = f"Test: {test['idea']}. " + (post.get("why") or "")
+        if test["change"] == "format":
+            post["format"] = test["value"]
+        elif test["change"] == "hour":
+            post["scheduled_at"] = slots[i].isoformat()
+        elif config.MOCK:
+            post["topic"] = test["idea"]
+
+
+def _needs_posts(ctx: dict, request: str, n: int, slots: list[datetime], step: str,
+                 tests: list[dict] | None = None) -> dict:
     """Steps 2, 3, 5 are written by the agent: everything it needs to write the posts."""
     tz = ctx["tz"]
     return {
@@ -313,6 +368,7 @@ def _needs_posts(ctx: dict, request: str, n: int, slots: list[datetime], step: s
             "free_slots": [f"{DAY_NAMES[s.astimezone(tz).weekday()]} {s.astimezone(tz).isoformat()}" for s in slots],
             "brand_brief": ctx["brief"], "connected_platforms": ctx["connected"],
             "learnings": ctx["learnings"] or "none yet", "already_on_calendar": ctx["calendar"],
+            "tests": tests or "none",
         },
     }
 

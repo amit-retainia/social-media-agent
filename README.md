@@ -71,7 +71,34 @@ Notes:
 | 3. Creator | Final copy, images (MachGen), video clips (MachGen), voiceover (Fish Audio), edit with captions (ffmpeg), sizes per platform (9:16, 1:1, 16:9), text per platform |
 | 4. Owner approval | Preview on your phone (Telegram) or in the terminal; approve, or ask for changes with a short note; the Creator fixes and sends it again; reminders for slow approvals |
 | 5. Publisher | Posts at the set time, 3 retries, alerts, new time from the Planner, replies to comments |
-| 6. Analyst | Metrics at 1 h, 24 h, 7 days; finds what works; learnings go to the Planner |
+| 6. Analyst | Saves each post's numbers at 1 h, 24 h, 3 days, 7 days (on time, by the bot) and the follower count every day; scores posts by growth (follows, shares, saves); finds what works; learnings go to the Planner; weekly report to you |
+
+## The Analyst (step 6)
+
+- **Counter** (the bot, every round): saves each post's numbers when it is 1 h, 24 h, 3 days and 7 days old
+  (reach, views, likes, comments, shares, saves, follows, profile visits), and each account's follower count once a day.
+  Numbers taken late (the bot was off) are saved but marked `late` and not compared.
+- **Growth score** = (follows x 3 + shares x 2 + saves) per 1,000 reach. These actions bring new followers.
+  A platform that gives none of them: (likes + comments) per 1,000 reach.
+- **Fair comparisons:** same platform, same post age, reach of 100 or more, and the same numbers for every post.
+  A "best" format or hour needs 3 posts in each of 2 groups and a 10% lead. Before that it says "too early".
+- **Weekly report** (Monday 9:00 local time, to your phone): follower change, posts this week, top post, the running test.
+
+### Tests: the usual way vs one new idea (`experiments.py`)
+
+- **One test at a time.** A test changes ONE thing: a format, a posting hour, or an idea (topic, hook, caption style).
+- **Queue:** ideas wait in a queue. From you or the agent (`add_test`: trends, other accounts' strong posts), or
+  from the Analyst (formats and hours not tried lately, added when the queue is empty). Your ideas go first.
+  Ideas from trends that wait more than 6 weeks are dropped.
+- **Your OK:** content ideas from the agent or the Scout (a trend, another shop's style) are sent to you first:
+  "Try it? Yes / No" (Telegram buttons, or the chat). Yes = it goes to the queue. No = not asked again for 8 weeks.
+  No answer in 3 days = skipped. Formats, hours and your own ideas need no OK.
+- **Planner:** about 30% of each week's posts are test posts (`TEST_SHARE`). The other posts use what works.
+- **Decision** (the bot), when the 2 test posts have their 3-day numbers, by growth score vs the usual posts:
+  20% better and both test posts better = **won** (it becomes the usual way: "Best format: carousel");
+  20% worse and both worse = **lost** (not tried again for 8 weeks); a small gap, or the 2 posts do not agree =
+  1 more test post, then **no difference** (keep the usual way). You get the result. Then the next idea starts.
+  At 3 posts a week (1 test post a week), a test takes about 10 days, or 17 days when it is unclear.
 
 ## The Planner (step 2)
 
@@ -162,7 +189,8 @@ python main.py --bot
 ```
 
 It listens to your phone, and every `BOT_PUBLISH_EVERY_MINUTES` (5) it, for every business:
-sends new previews, sends reminders, and runs the Publisher (posts what is due).
+sends new previews, sends reminders, runs the Publisher (posts what is due), and saves the Analyst's numbers
+(post numbers on time, follower count, weekly report).
 Run it on a computer or server that is always on (for example with `nohup`, `systemd`, `pm2` or a small cloud VM).
 With `--bot` running you do not need the cron job for `--publish`.
 
@@ -251,6 +279,9 @@ Everything is saved in `data/businesses/<business name>/`:
 - `content_plan.json` - the Planner's plan, ready for the Creator
 - `media_library/<post id>/` - script, drafts, images, clips, voiceover, final videos
 - `learnings.json` - what works best (the Planner reads it)
+- `followers.json` - follower count per platform, one per day
+- `reports.json` - the weekly reports sent to you
+- `experiments.json` - the tests: running, the queue of ideas, results
 - `alerts.json` - messages for you (failed posts, hard comments, approval reminders)
 - `data/businesses/_telegram_state.json` - the bot's memory (which button belongs to which draft)
 
@@ -286,6 +317,12 @@ plus real ffmpeg edits with captions and exact sizes per platform.
 | `BOT_PUBLISH_EVERY_MINUTES` | `5` | `--bot`: minutes between Publisher runs |
 | `TIMEZONE` | `UTC` | Default time zone for posting times |
 | `PLANNER_MIN_LEAD_HOURS` | `3` | Time between planning and the first possible post |
+| `ANALYST_MIN_REACH` | `100` | Posts seen by fewer people are not scored |
+| `ANALYST_MIN_POSTS` | `3` | Posts per group before the Analyst names a "best" format or hour |
+| `REPORT_DAY` / `REPORT_HOUR` | `Monday` / `9` | When the weekly report goes to you (business time zone) |
+| `TEST_SHARE` | `0.3` | Part of each week's posts that are test posts. `0` = no tests |
+| `TEST_POSTS` | `2` | Test posts before a decision (+1 when unclear) |
+| `TEST_CHECKPOINT` | `3d` | Post age at which test posts are judged: `24h`, `3d` or `7d` |
 | `PUBLISH_RETRY_WAIT` | `2` | Seconds between Publisher retries |
 | `SIMULATE_FAIL_RATE` | `0.0` | Test failures (simulated platforms): `1.0` = every post fails |
 
@@ -297,6 +334,7 @@ main.py                     the steps for the agent (--tool, --once, --check, --
 social_agent/
   config.py                 settings and keys; services() shows real vs simulated
   business_space.py         the shared Business space (JSON files today)
+  experiments.py            tests: the usual way vs one new idea (queue, test posts, decision)
   bot.py                    always-on runner: phone answers, reminders, Publisher on time
   agents/
     manager.py              the steps the agent (Manager) runs: --tool <step>

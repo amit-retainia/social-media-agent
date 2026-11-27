@@ -51,7 +51,8 @@ class Base(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.patches = [mock.patch.object(config, "DATA_DIR", self.tmp),
                         mock.patch.object(config, "PUBLISH_RETRY_WAIT", 0),
-                        mock.patch.object(config, "MOCK", False)]
+                        mock.patch.object(config, "MOCK", False),
+                        mock.patch.object(config, "TEST_SHARE", 0)]  # No A/B tests unless a test turns them on.
         # Real keys on this computer must never reach a test: each test sets the fake keys it needs.
         for key in KEYS:
             self.patches.append(mock.patch.object(config, key, ""))

@@ -1,4 +1,4 @@
-"""X (Twitter) API v2: post text with images or a video, and read a post's numbers.
+"""X (Twitter) API v2: post text with images or a video, read a post's numbers and the follower count.
 
 Keys (one X account; per business add _<BUSINESS>): X_API_KEY, X_API_SECRET (the app's consumer keys),
 X_ACCESS_TOKEN, X_ACCESS_SECRET (the account's user keys, "Read and write"). developer.x.com -> your app -> Keys.
@@ -72,5 +72,12 @@ def _upload_video(creds: dict, path: Path) -> str:
 def metrics(creds: dict, post_id: str) -> dict:
     m = _call(creds, "GET", f"tweets/{post_id}", params={"tweet.fields": "public_metrics"}
               ).get("data", {}).get("public_metrics", {})
+    shares = None if m.get("retweet_count") is None else m["retweet_count"] + m.get("quote_count", 0)
     return {"reach": m.get("impression_count"), "views": m.get("impression_count"),
-            "likes": m.get("like_count"), "comments": m.get("reply_count")}
+            "likes": m.get("like_count"), "comments": m.get("reply_count"),
+            "shares": shares, "saves": m.get("bookmark_count")}
+
+
+def followers(creds: dict) -> int | None:
+    me = _call(creds, "GET", "users/me", params={"user.fields": "public_metrics"}).get("data", {})
+    return (me.get("public_metrics") or {}).get("followers_count")

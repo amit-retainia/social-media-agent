@@ -2,13 +2,14 @@
 
 - Listens to the owner's phone (Telegram): Approve / Ask for changes / notes, at any time.
 - Every few minutes, for every business: sends new previews, reminds about slow approvals,
-  and runs the Publisher (posts what is due, with retries and alerts).
+  runs the Publisher (posts what is due, with retries and alerts), and the Analyst's counter
+  (post numbers on time, follower count once a day, test results, the weekly report).
 Stop it with Ctrl+C. Run it on an always-on computer or server (see README).
 """
 import time
 
-from . import config
-from .agents import owner_approval, publisher
+from . import config, experiments
+from .agents import analyst, owner_approval, publisher
 from .business_space import BusinessSpace
 from .tools import telegram
 
@@ -46,6 +47,11 @@ def tick(app=None) -> None:
             out = publisher.run(space, app)
             for r in out["published"]:
                 app.say("Publisher", f"{space.tenant_id}: {r}")
+            analyst.collect(space)  # Post numbers at 1 h, 24 h, 7 days, and the follower count once a day.
+            for line in experiments.review(space):  # A test with all its numbers: won, lost or no difference.
+                app.say("Analyst", f"{space.tenant_id}: {line}")
+            if analyst.weekly_report(space):
+                app.say("Analyst", f"{space.tenant_id}: weekly report sent to the owner.")
             waiting = sum(len(p.get("pending_comments", [])) for p in space.posts_with_status("posted"))
             if waiting:
                 app.say("Publisher", f"{space.tenant_id}: {waiting} comment(s) wait for a reply "

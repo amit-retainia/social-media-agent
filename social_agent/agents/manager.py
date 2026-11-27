@@ -7,7 +7,7 @@ Order: 1 brief -> 2 plan + script -> 3 create -> 4 owner approval -> 5 post -> 6
 A step that needs text answers {"status": "needs_text", "rules", "shape", "data"}; the agent writes the
 text and runs the step again with it.
 """
-from .. import records
+from .. import experiments, records
 from ..business_space import BusinessSpace
 from . import analyst, creator, interviewer, owner_approval, planner, publisher
 
@@ -15,7 +15,8 @@ NAME = "Manager"
 
 # Every step, with its input. main.py --tool runs them; SKILL.md lists them for the agent.
 TOOLS = {
-    "show_business_space": "section: summary | brand_brief | connected_accounts | content_calendar | content_plan | learnings",
+    "show_business_space": "section: summary | brand_brief | connected_accounts | content_calendar | content_plan | "
+                           "learnings | followers | reports",
     "brief_questions": "(none) - the brand brief fields and the interview questions",
     "update_brand_brief": "changes: {field: value}",
     "connect_accounts": "platforms: [instagram, facebook]",
@@ -30,10 +31,17 @@ TOOLS = {
     "publish_due": "post_now (only if the owner says so)",
     "run_analyst": "(none) - then write learnings and run save_learnings",
     "save_learnings": "learnings: [lines]",
+    "show_tests": "(none) - the running test, the queue of ideas, the last results",
+    "add_test": "change: format | hour | idea, value (format name, hour 6-22, or the idea), idea (short text), "
+                "evidence (why: a trend, another account's post), source: owner (the owner's own idea; no question) "
+                "| agent | scout, first: true (the owner wants it next)",
+    "answer_test": "test_id, answer: yes | no - the owner's answer to a test idea",
+    "drop_test": "test_id",
     "show_comments": "(none) - comments that wait for a reply",
     "reply_comments": "replies: [{post_id, comment_id, text}]",
     "export": "post_ids (optional) - rows for the Dexere tables; save them after every step that changed something",
-    "restore": "rows: {businesses, posts, drafts, comments, metrics, learnings} from Dexere - a fresh disk only",
+    "restore": "rows: {businesses, posts, drafts, comments, metrics, learnings, followers, tests} from Dexere - "
+               "a fresh disk only",
 }
 
 
@@ -59,6 +67,7 @@ class Manager:
                 "summary": s.summary, "brand_brief": s.get_brand_brief,
                 "connected_accounts": s.get_connected_accounts, "content_calendar": s.get_calendar,
                 "content_plan": s.get_content_plan, "learnings": s.get_learnings,
+                "followers": s.get_followers, "reports": s.get_reports,
             }[args.get("section", "summary")]()
         if name == "brief_questions":
             return {"fields": interviewer.BRIEF_FIELDS, "questions": [q for _, q in interviewer.QUESTIONS]}
@@ -104,6 +113,19 @@ class Manager:
         if name == "save_learnings":
             s.add_learnings([str(x) for x in args["learnings"]])
             return {"status": "saved", "learnings": s.get_learnings()[-10:]}
+        if name == "show_tests":
+            return experiments.show(s)
+        if name == "add_test":
+            source = args.get("source") or ("owner" if args.get("first") else "agent")
+            return experiments.add(s, args.get("change"), args.get("value"), args.get("idea", ""),
+                                   args.get("evidence", ""), source=source, first=bool(args.get("first")))
+        if name == "answer_test":
+            answer = str(args.get("answer", "")).strip().lower()
+            if answer not in ("yes", "no"):
+                return {"error": "answer: yes or no (the owner's words)"}
+            return experiments.answer(s, args["test_id"], answer == "yes", via="chat")
+        if name == "drop_test":
+            return experiments.drop(s, args["test_id"])
         if name == "show_comments":
             return publisher.pending_comments(s)
         if name == "reply_comments":

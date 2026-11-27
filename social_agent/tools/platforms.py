@@ -10,7 +10,7 @@
   TikTok and YouTube: not supported yet.
 Simulated: when a platform's keys are missing. Nothing is posted.
 
-Functions: connect_account, publish, fetch_new_comments, reply, get_metrics.
+Functions: connect_account, publish, fetch_new_comments, reply, get_metrics, get_followers.
 Docs (checked 2026-11-25): https://developers.facebook.com/docs/instagram-platform/content-publishing ,
   https://developers.facebook.com/docs/pages-api/posts
 """
@@ -263,20 +263,30 @@ def reply(platform: str, comment_id: str, text: str, space=None) -> None:
 
 
 # ---------------- metrics ----------------
+# shares, saves, follows (people who followed from this post), profile_visits: the numbers that bring growth.
+METRIC_FIELDS = ("reach", "views", "likes", "comments", "shares", "saves", "follows", "profile_visits")
+# Instagram does not give every metric for every media type (reels: no follows): ask again with fewer.
+IG_METRIC_SETS = ("reach,views,likes,comments,saved,shares,follows,profile_visits",
+                  "reach,views,likes,comments,saved,shares", "reach,views,likes,comments")
+
+
 def get_metrics(platform: str, post: dict, checkpoint: str, space=None) -> dict:
-    """Reach, views, likes, comments. Missing numbers are 0 and listed in "gaps"."""
+    """The numbers in METRIC_FIELDS. Missing numbers are 0 and listed in "gaps"."""
     tenant = _tenant(space)
     if platform not in SUPPORTED or not is_real(platform, tenant):
         seed = int(hashlib.md5(f"{post['id']}{platform}{checkpoint}".encode()).hexdigest(), 16)
         rng = random.Random(seed)
-        scale = {"1h": 1, "24h": 6, "7d": 15}[checkpoint]
+        scale = {"1h": 1, "24h": 6, "3d": 11, "7d": 15}[checkpoint]
         boost = 2.0 if post.get("format") in ("reel", "video") else 1.0
         reach = int(rng.randint(80, 300) * scale * boost)
         return {"reach": reach, "views": int(reach * rng.uniform(1.0, 1.6)),
                 "likes": int(reach * rng.uniform(0.03, 0.12)),
-                "comments": int(reach * rng.uniform(0.002, 0.02)), "mode": "simulated"}
+                "comments": int(reach * rng.uniform(0.002, 0.02)),
+                "shares": int(reach * rng.uniform(0.002, 0.02)), "saves": int(reach * rng.uniform(0.003, 0.03)),
+                "follows": int(reach * rng.uniform(0.0, 0.01)), "profile_visits": int(reach * rng.uniform(0.01, 0.05)),
+                "gaps": [], "mode": "simulated"}
     post_id = post.get("publish_results", {}).get(platform, {}).get("platform_post_id")
-    empty = {"reach": 0, "views": 0, "likes": 0, "comments": 0, "gaps": ["no post id"], "mode": "meta"}
+    empty = {f: 0 for f in METRIC_FIELDS} | {"gaps": ["no post id"], "mode": "meta"}
     if not post_id:
         return empty
     _, token = _keys(platform, tenant)
@@ -285,13 +295,13 @@ def get_metrics(platform: str, post: dict, checkpoint: str, space=None) -> dict:
         if platform in OTHER_APIS:
             raw = _other(platform, tenant, "metrics", post_id)
         elif platform == "instagram":
-            data = _api(platform, "GET", f"{post_id}/insights", token, metric="reach,views,likes,comments")
-            raw = {m["name"]: (m.get("values") or [{}])[0].get("value") for m in data.get("data", [])}
+            raw = _instagram_insights(post_id, token)
         else:
             data = _api(platform, "GET", post_id, token,
-                        fields="reactions.summary(true),comments.summary(true)")
+                        fields="reactions.summary(true),comments.summary(true),shares")
             raw = {"likes": (data.get("reactions") or {}).get("summary", {}).get("total_count"),
-                   "comments": (data.get("comments") or {}).get("summary", {}).get("total_count")}
+                   "comments": (data.get("comments") or {}).get("summary", {}).get("total_count"),
+                   "shares": (data.get("shares") or {}).get("count", 0)}  # Facebook leaves out 0 shares.
             try:
                 ins = _api(platform, "GET", f"{post_id}/insights", token, metric="post_impressions_unique")
                 raw["reach"] = (ins.get("data") or [{}])[0].get("values", [{}])[0].get("value")
@@ -302,9 +312,46 @@ def get_metrics(platform: str, post: dict, checkpoint: str, space=None) -> dict:
     return normalise_metrics(raw)
 
 
+def _instagram_insights(post_id: str, token: str) -> dict:
+    for i, metric in enumerate(IG_METRIC_SETS):
+        try:
+            data = _api("instagram", "GET", f"{post_id}/insights", token, metric=metric)
+        except PublishError:
+            if i == len(IG_METRIC_SETS) - 1:
+                raise
+            continue
+        raw = {m["name"]: (m.get("values") or [{}])[0].get("value") for m in data.get("data", [])}
+        raw["saves"] = raw.pop("saved", None)
+        return raw
+    return {}
+
+
+def get_followers(platform: str, space=None) -> dict:
+    """The account's follower count now: {"followers": int or None, "mode", "gap" (why it is None)}."""
+    tenant = _tenant(space)
+    if platform not in SUPPORTED or not is_real(platform, tenant):
+        seed = int(hashlib.md5(f"{tenant}{platform}".encode()).hexdigest(), 16)
+        posted = len(space.posts_with_status("posted")) if space is not None else 0
+        return {"followers": random.Random(seed).randint(200, 2000) + posted * 7, "mode": "simulated"}
+    if platform == "linkedin":  # A company page's followers need the organization scope: not set up yet.
+        return {"followers": None, "mode": "linkedin", "gap": "LinkedIn follower count is not set up yet"}
+    try:
+        if platform == "x":
+            count = _other(platform, tenant, "followers")
+        else:
+            account, token = _keys(platform, tenant)
+            count = _api(platform, "GET", "me" if platform == "instagram" else account, token,
+                         fields="followers_count").get("followers_count")
+    except PublishError as exc:
+        return {"followers": None, "mode": platform, "gap": str(exc)[:200]}
+    if not isinstance(count, int):
+        return {"followers": None, "mode": platform, "gap": "no followers_count in the answer"}
+    return {"followers": count, "mode": platform}
+
+
 def normalise_metrics(raw: dict) -> dict:
     out, gaps = {}, []
-    for field in ("reach", "views", "likes", "comments"):
+    for field in METRIC_FIELDS:
         value = raw.get(field)
         if not isinstance(value, (int, float)):
             gaps.append(field)

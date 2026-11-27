@@ -17,7 +17,7 @@ Routine every 15 min: main.py --once
     reminders for drafts not approved ─▶ posts what is due (Instagram, Facebook, X, LinkedIn) ─▶ replies to comments
 ```
 Storage:
-- **Text in Dexere**, space "Social Media Agent": tables businesses, posts, drafts, comments, metrics, learnings
+- **Text in Dexere**, space "Social Media Agent": tables businesses, posts, drafts, comments, metrics, learnings, followers, tests
   (every table has a `business` column) and the log. Grok writes the rows after each step (`--tool export`) and
   rebuilds a fresh disk from them (`--tool restore`).
 - **Media in Cloudflare R2** (`MEDIA_UPLOAD=1`), key `sms/<business>/media_library/<post id>/...`: the paid AI

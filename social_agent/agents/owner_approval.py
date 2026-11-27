@@ -261,6 +261,36 @@ def send_discord_preview(space: BusinessSpace, post: dict) -> dict:
     return {"id": post["id"], "version": version, "channel": "discord"}
 
 
+def send_test_question(space: BusinessSpace, test: dict) -> dict:
+    """A content idea for a test: the owner taps Yes (it goes to the test queue) or No."""
+    from .. import experiments
+    chat = config.telegram_chat_id(space.tenant_id)
+    state = _load_state()
+    token = secrets.token_hex(4)
+    msg = telegram.send_text(chat, experiments.question(test) + "\n\nTap a button, or reply 'yes' or 'no'.", buttons=[[
+        {"text": "✅ Try it", "callback_data": f"ty:{token}"},
+        {"text": "❌ No", "callback_data": f"tn:{token}"}]])
+    state["buttons"][token] = {"tenant": space.tenant_id, "test": test["id"], "chat": str(chat),
+                               "message_id": msg["message_id"]}
+    _save_state(state)
+    return {"id": test["id"], "message_id": msg["message_id"]}
+
+
+def _answer_test_on_phone(entry: dict, yes: bool) -> str:
+    from .. import experiments
+    try:
+        space = BusinessSpace(entry["tenant"])
+    except ValueError:
+        return "This business is gone."
+    out = experiments.answer(space, entry["test"], yes, via="telegram")
+    telegram.remove_buttons(entry["chat"], entry["message_id"])
+    if "error" in out:
+        return "This idea was already decided, or no answer came in time."
+    if yes:
+        return f"✅ Added to the tests (number {out['queue_position']} in line). I will tell you the result."
+    return "❌ OK, not this idea."
+
+
 def poll(wait_seconds: int = 0) -> int:
     """Read new answers from the phone and act on them. Returns how many updates were handled."""
     updates = telegram.get_updates(_load_state()["offset"], wait_seconds)
@@ -312,6 +342,10 @@ def handle_update(update: dict) -> None:
         if not entry or entry["chat"] != chat:
             telegram.answer_button(cq["id"], "This preview is old.")
             return
+        if entry.get("test"):  # A test idea: Try it / No.
+            telegram.answer_button(cq["id"])
+            telegram.send_text(chat, _answer_test_on_phone(entry, action == "ty"))
+            return
         space, post = _current(entry)
         if post is None:
             telegram.answer_button(cq["id"], "This draft was changed or already decided.")
@@ -347,6 +381,12 @@ def handle_update(update: dict) -> None:
     state["awaiting_note"].pop(chat, None)
     _save_state(state)
     entry = state["buttons"].get(token)
+    if entry and entry.get("test"):  # A reply to a test idea: yes or no.
+        if text.lower() in YES | NO:
+            _try_send(chat, _answer_test_on_phone(entry, text.lower() in YES))
+        else:
+            _try_send(chat, "Please answer 'yes' or 'no' to this test idea.")
+        return
     space, post = _current(entry) if entry else (None, None)
     if post is None:
         _try_send(chat, "That draft was changed or already decided. Use the newest preview.")

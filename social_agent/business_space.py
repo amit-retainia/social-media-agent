@@ -1,6 +1,6 @@
 """Business space: the shared data for ONE business. All agents read it.
 
-It holds: brand brief, connected accounts, content calendar, media library, learnings.
+It holds: brand brief, connected accounts, content calendar, media library, learnings, follower counts.
 Today it is a folder of JSON files: data/businesses/<tenant_id>/
 TODO (plan "Tech choices"): Postgres with row-level security by tenant_id,
 a vector store for learnings, and R2 for the media library.
@@ -111,6 +111,32 @@ class BusinessSpace:
         learnings.extend({"learning": text, "added_at": stamp} for text in items)
         self._write("learnings", learnings)
 
+    # -- follower count per platform, one per day (the Analyst saves it) --
+    def get_followers(self) -> list[dict]:
+        return self._read("followers", [])
+
+    def add_followers(self, platform: str, day: str, count: int | None, mode: str, gap: str = "") -> None:
+        rows = self.get_followers()
+        rows.append({"platform": platform, "date": day, "followers": count, "mode": mode, "gap": gap,
+                     "at": now_utc().isoformat()})
+        self._write("followers", rows)
+
+    # -- tests: queued, running and finished (experiments.py) --
+    def get_experiments(self) -> list[dict]:
+        return self._read("experiments", [])
+
+    def save_experiments(self, tests: list[dict]) -> None:
+        self._write("experiments", tests)
+
+    # -- weekly reports sent to the owner --
+    def get_reports(self) -> list[dict]:
+        return self._read("reports", [])
+
+    def add_report(self, week_of: str, text: str) -> None:
+        reports = self.get_reports()
+        reports.append({"week_of": week_of, "text": text, "at": now_utc().isoformat()})
+        self._write("reports", reports)
+
     # -- alerts to the owner (shown in the Owner app) --
     def add_alert(self, text: str, phone: bool = True) -> None:
         from .tools import notify  # Telegram / webhook / email, when set in .env.
@@ -141,5 +167,6 @@ class BusinessSpace:
             "connected_accounts": self.get_connected_accounts(),
             "content_calendar": counts,
             "learnings": len(self.get_learnings()),
+            "followers": {f["platform"]: f["followers"] for f in self.get_followers() if f["followers"] is not None},
             "content_plan": "content_plan.json" if (self.root / "content_plan.json").exists() else "none yet",
         }

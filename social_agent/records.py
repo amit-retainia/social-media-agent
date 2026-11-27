@@ -1,7 +1,8 @@
 """Rows for the Dexere space "Social Media Agent" (the agent writes them; this app cannot reach Dexere).
 
 Dexere is the source of truth for text; the JSON files on disk are only a working copy:
-  export()   the rows of a business for the 6 tables (businesses, posts, drafts, comments, metrics, learnings),
+  export()   the rows of a business for the 8 tables (businesses, posts, drafts, comments, metrics, learnings,
+             followers, tests),
              in the tables' field keys. The agent saves them after each step that changed something.
   restore()  a fresh disk: the agent reads the business's rows from Dexere and passes them back (same shape);
              this rebuilds the JSON files, and the kept media comes back from R2 (tools/media.py).
@@ -10,9 +11,9 @@ import json
 import re
 
 from .business_space import BusinessSpace, now_utc, parse_time
-from .tools import media, storage
+from .tools import media, platforms, storage
 
-TABLES = ("businesses", "posts", "drafts", "comments", "metrics", "learnings")
+TABLES = ("businesses", "posts", "drafts", "comments", "metrics", "learnings", "followers", "tests")
 FINAL = re.compile(r"v\d+_\d+x\d+_")
 
 
@@ -66,11 +67,21 @@ def export(space: BusinessSpace, post_ids: list[str] | None = None) -> dict:
                 rows["metrics"].append({
                     "key": f"{p['id']}@{platform}@{checkpoint}", "post": p["id"], "business": biz,
                     "platform": platform, "checkpoint": checkpoint,
-                    **{k: m.get(k) for k in ("reach", "views", "likes", "comments")},
+                    **{k: m.get(k) for k in platforms.METRIC_FIELDS},
+                    "late": bool(m.get("late")), "taken_at": _date(m.get("taken_at")),
                     "missing": ", ".join(m.get("gaps", []))})
     if not post_ids:
         rows["learnings"] = [{"learning": item["learning"], "business": biz, "status": "active",
                               "added_at": _date(item.get("added_at"))} for item in space.get_learnings()]
+        rows["followers"] = [{"key": f"{biz}@{f['platform']}@{f['date']}", "business": biz, "platform": f["platform"],
+                              "date": f["date"], "followers": f["followers"], "missing": f.get("gap", "")}
+                             for f in space.get_followers()]
+        rows["tests"] = [{"test_id": t["id"], "business": biz, "change": t["change"], "value": str(t["value"]),
+                          "idea": t["idea"], "status": t["status"], "source": t["source"], "priority": t["priority"],
+                          "platform": t.get("platform"), "posts": ", ".join(t["posts"]), "needed": t["needed"],
+                          "result": json.dumps(t.get("result") or {}, ensure_ascii=False),
+                          "record": json.dumps(t, ensure_ascii=False), "added_at": _date(t.get("added_at")),
+                          "ended_at": _date(t.get("ended_at"))} for t in space.get_experiments()]
     return rows
 
 
@@ -116,6 +127,11 @@ def restore(space: BusinessSpace, rows: dict) -> dict:
     learnings = [r["learning"] for r in rows.get("learnings", []) if r.get("status", "active") == "active"]
     if learnings and not space.get_learnings():
         space.add_learnings(learnings)
+    if not space.get_followers():
+        for f in sorted(rows.get("followers", []), key=lambda f: f["date"]):
+            space.add_followers(f["platform"], f["date"], f.get("followers"), "restored", f.get("missing") or "")
+    if rows.get("tests") and not space.get_experiments():
+        space.save_experiments([json.loads(r["record"]) for r in rows["tests"]])
     pulled = 0
     if media.on():
         for post in calendar:

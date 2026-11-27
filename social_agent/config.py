@@ -128,7 +128,25 @@ PUBLISH_RETRY_WAIT = float(_env("PUBLISH_RETRY_WAIT", "2"))
 SIMULATE_FAIL_RATE = float(_env("SIMULATE_FAIL_RATE", "0"))
 
 # Analyst pulls metrics at these times after each post (hours).
-METRIC_CHECKPOINTS = {"1h": 1, "24h": 24, "7d": 24 * 7}
+METRIC_CHECKPOINTS = {"1h": 1, "24h": 24, "3d": 24 * 3, "7d": 24 * 7}
+# A checkpoint taken after this many hours (the bot was off) is "late": saved, but not used to compare posts.
+METRIC_LATE_HOURS = {"1h": 3, "24h": 30, "3d": 24 * 3 + 12, "7d": 24 * 8}
+# Growth score = (follows x 3 + shares x 2 + saves x 1) per 1,000 reach.
+GROWTH_WEIGHTS = {"follows": 3, "shares": 2, "saves": 1}
+ANALYST_MIN_REACH = int(_env("ANALYST_MIN_REACH", "100"))  # Posts seen by fewer people are too small to score.
+ANALYST_MIN_POSTS = int(_env("ANALYST_MIN_POSTS", "3"))  # Posts per group before the Analyst names a "best".
+# Tests (experiments.py): the usual way vs one new idea, one test at a time.
+TEST_SHARE = float(_env("TEST_SHARE", "0.3"))  # Part of each week's posts that are test posts (0 = no tests).
+TEST_POSTS = int(_env("TEST_POSTS", "2"))  # Test posts before a decision.
+TEST_EXTRA_POSTS = 1  # More test posts when the result is unclear.
+TEST_CHECKPOINT = _env("TEST_CHECKPOINT", "3d")  # Post age at which test posts are judged: 24h, 3d or 7d.
+TEST_LIFT = 0.20  # 20% better than usual (and most test posts better) = won; 20% worse = lost; else unclear.
+TEST_PARK_DAYS = 56  # A lost idea is not tested again for 8 weeks.
+IDEA_EXPIRE_DAYS = 42  # Ideas from trends or other accounts that wait longer than 6 weeks are dropped.
+IDEA_ASK_DAYS = 3  # Content ideas wait this long for the owner's yes; no answer = skipped.
+# Weekly report to the owner (numbers only), in the business time zone.
+REPORT_DAY = _env("REPORT_DAY", "Monday")
+REPORT_HOUR = int(_env("REPORT_HOUR", "9"))
 
 
 def for_business(name: str, tenant_id: str | None) -> str:
